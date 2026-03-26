@@ -1,0 +1,6 @@
+# Build artifacts
+/dist
+/godownload
+
+# Local temp/dev files
+/tmp

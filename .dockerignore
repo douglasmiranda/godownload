@@ -1,0 +1,15 @@
+# Build artifacts
+/dist
+/godownload
+
+# Local temp/dev files
+/tmp
+
+# VCS and editor
+.git
+.gitignore
+.vscode
+
+# Docs that are not needed for build context
+AGENTS.md
+prompt.md

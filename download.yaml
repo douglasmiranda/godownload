@@ -1,0 +1,429 @@
+# ENVIRONMENT VARIABLES:
+# IMPORTANT: the precedence for environment variables is as follows (from highest to lowest):
+# 1. env field in the download config (see topic USING ENVIRONMENT VARIABLES in the downloads section below)
+# 2. global env config (see the env section below)
+# 3. env_file (see the env_file section below)
+# 3.1 env_file can contain multiple files, the precedence is determined by the order of the files in the list
+# (the first file has the highest precedence)
+
+# dotenv with environment variables (optional config)
+env_file:
+  # the file containing the environment variables (optional, if not provided it will use the environment variables from the system)
+  # takes precedence over other .env* defined after it in the list
+  - .env.local # Highest priority - local developer overrides
+  - .env # Base defaults (lowest priority env file)
+  # the env: config can also override this, both global and per download config.
+  # .env* are just examples, you can use any file name for the env files and have as many as you want.
+  # by default no env file is expected.
+
+# global environment variables that can be used in the download configs (optional config)
+env:
+  # environment variables that can be used in the download configs
+  # they can be accessed in the download configs using $ENV_VAR_NAME
+  ENV_VAR_NAME: "value"
+  BASE_DOWNLOAD_DIR: "./downloads"
+
+# the base configuration for the download worker, it can contain settings that apply to all downloads
+# (e.g. base directory for saving the files) as well as some worker-specific settings
+config:
+  # WORKER SPECIFIC CONFIGS
+  concurrency: 5 # the number of concurrent downloads (optional, default is 10)
+  log_level: DEBUG # the log level for the worker (optional, default is INFO)
+
+  # DEFAULT CONFIGS FOR ALL DOWNLOADS (can be overridden by individual download configs)
+  save:
+    # the base directory where the downloaded files will be saved (optional, default is the current directory)
+    # relative or absolute path
+    base_download_dir: ./custom-downloads
+    # base_download_dir: $BASE_DOWNLOAD_DIR
+    # the filename template for the downloaded files (optional, default is the original filename from the URL)
+    # it can include placeholders for the original filename, the options are:
+    # - {{.ORIGINAL_FILENAME}}: the original filename from the URL (e.g. file.zip)
+    # - {{.URL}}: the full URL of the file being downloaded (e.g. https://example.com/file.zip)
+    # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
+    # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
+    # - {{.TIME}}: the time of the download (e.g. 12-00-00)
+    # - {{.UUID}}: a unique identifier for the download (e.g. 550e8400-e29b-41d4-a716-446655440000)
+    filename_template: "{{.ORIGINAL_FILENAME}}" # default is the original filename from the URL
+    # when "filename" is set in the download config, it will override the filename_template
+    # filename: "custom_name.zip" # this will override the filename_template for this download
+
+  # default attribute mappings for the selector
+  # (optional, can be overridden by individual download configs)
+  default_attr_mappings:
+    a: href
+    img: src
+    link: href
+    script: src
+    iframe: src
+
+downloads:
+  ###############################################
+  # WAYS TO SPECIFY/FIND THE URL TO DOWNLOAD FROM
+  ###############################################
+
+  # download the file from a specific link, based on the selector and attribute
+  example_by_id_unique:
+    # urls can be a direct link to the file or a page that contains the link to the file
+    # this is the only required field, the rest of the fields are optional and can be
+    # used to specify how to find the link to download from the page
+    url: https://example.com/
+    # <a id="download-link" href="https://example.com/file.zip">Download</a>
+    selector: "#download-link"
+
+  # override the default attribute mappings for the selector
+  example_by_class_custom_attr:
+    url: https://example.com/
+    # <a class="download-link" data-download-url="https://example.com/file.zip">Download</a>
+    selector: ".download-link"
+    # in the configs default_attr_mappings already define the common tags and attributes,
+    # so you can omit the attr field if you use one of the default mappings
+    # (e.g. for "a" tag it will use "href" as the default attribute)
+    # but in this example we want to use a custom attribute "data-download-url"
+    # for the "a" tag, so we need to specify it in the configs
+    attr: "data-download-url"
+
+  # download the files from the links that match the selector
+  # (it will create necessary directories to save the files in the correct location)
+  # dir: example/file1.zip
+  # dir: example/folder/file2.zip
+  example_by_class_multiple:
+    url: https://example.com/
+    # <a class="download-link" href="https://example.com/file1.zip">Download</a>
+    # <a class="download-link" href="https://example.com/folder/file2.zip">Download</a>
+    selector: ".download-link"
+
+  # download the file from the links that match the selector and filter by regex
+  # <a href="https://example.com/file1.zip">Download File 1</a>
+  # <a href="https://example.com/file2.zip">Download File 2</a>
+  # <a href="https://example.com/file3.zip">This one won't be downloaded</a>
+  example_by_regex:
+    url: https://example.com/
+    selector: "a"
+    # only download the file if the link text matches the regex "File \d"
+    regex_filter: "File \\d"
+
+  # download the file from the links that match the selector and filter by regex on the URL
+  # <a href="https://example.com/file1.zip">Download File 1</a>
+  # <a href="https://example.com/file2.zip">Download File 2</a>
+  # <a href="https://example.com/random-file.zip">This one won't be downloaded</a>
+  example_by_attr_regex:
+    url: https://example.com/
+    selector: "a"
+    # only download the file if the URL matches the regex "file\\d\\.zip"
+    attr_val_regex_filter: "file\\d\\.zip"
+
+  ########################
+  # DYNAMIC URL GENERATION
+  ########################
+
+  # generate dynamic URLs based on a pattern and a range of values
+  example_dynamic_urls:
+    # the URL pattern with a placeholder for the variable part (e.g. https://example.com/file_{{.N}}.zip)
+    url: https://example.com/file_{{.N}}.zip
+    # the range of values for the variable part (e.g. n=1 to 10)
+    url_gen_range:
+      var_name: "N"
+      range_start: 1
+      range_end: 10
+      # optional step for the range (default is 1)
+      step: 1
+
+  # generate dynamic URLs based on a pattern and a list of values
+  example_dynamic_urls_list:
+    # the URL pattern with a placeholder for the variable part (e.g. https://example.com/file_{{.NAME}}.zip)
+    url: https://example.com/file_{{.NAME}}.zip
+    # the list of values for the variable part (e.g. name=["file1", "file2", "file3"])
+    url_gen_list:
+      var_name: "NAME"
+      values: ["file1", "file2", "file3"]
+
+  # generate dynamic URLs based on a pattern and a list of values from a file
+  example_dynamic_urls_file:
+    # the URL pattern with a placeholder for the variable part (e.g. https://example.com/file_{{.NAME}}.zip)
+    url: https://example.com/file_{{.NAME}}.zip
+    # the file containing the list of values for the variable part (e.g. name=["file1", "file2", "file3"])
+    url_gen_file:
+      var_name: "NAME"
+      # the file should contain one value per line (e.g. file1, file2, file3, etc.)
+      file: ./names.txt
+      # can also be a URL that generates the list of values
+      # file: https://example.com/names.txt
+
+  # generate entire dynamic URLs based on a pattern and a list of values from a file
+  example_dynamic_urls_entire:
+    # the URL pattern with a placeholder for the variable part (e.g. {{.URL}})
+    url: "{{.URL}}"
+    # the file containing the list of URLs to download
+    url_gen_file:
+      var_name: "URL"
+      file: ./urls.txt
+      # can also be a URL that generates the list of URLs to download
+      # file: https://example.com/urls.txt
+
+  # generate dynamic URLs based on a pattern of dates
+  example_dynamic_urls_dates:
+    # the URL pattern with a placeholder for the variable part (e.g. https://example.com/file_{{.DATE}}.zip)
+    url: https://example.com/file_{{.DATE}}.zip
+    # the date range for the variable part (e.g. date=2022-01-01 to 2022-01-31)
+    url_gen_dates:
+      var_name: "DATE"
+      date_range_start: "2022-01-01"
+      date_range_end: "2022-01-31"
+      # default date format is "YYYY-MM-DD"
+      # allowed formats: "YYYY-MM-DD", "MM/DD/YYYY", "DD-MM-YYYY".
+      date_format: "YYYY-MM-DD"
+
+  #################################
+  # ABOUT THE FILE TO BE DOWNLOADED
+  #################################
+
+  # force download the file even if it already exists
+  # (by default it will skip downloading if the file already exists)
+  example_force_download:
+    # urls can be a direct link to the file or a page that contains the link to the file
+    url: https://example.com/file.zip
+    force_download: true
+
+  # save the downloaded file in a specific directory (relative or absolute path)
+  example_custom_directory:
+    url: https://example.com/file.zip
+    save:
+      base_download_dir: ./custom-directory
+
+  # use a custom filename for the downloaded file
+  example_custom_filename:
+    url: https://example.com/file.zip
+    save:
+      # it can only be used with a single file download
+      # (i.e. it cannot be used with a selector that matches multiple links)
+      filename: "custom_name.zip"
+
+  # set override if file exists
+  # combined with force_download, it will force the download and override the existing file if it already exists
+  example_override_if_exists:
+    url: https://example.com/file.zip
+    force_download: true
+    save:
+      # if the file already exists, it will be overridden
+      # (default is false, which means it will skip downloading if the file already exists)
+      override_if_exists: true
+
+  # use template for the filename of the downloaded file
+  # IMPORTANT: the interaction between filename_template and override_if_exists is as follows:
+  # - if override_if_exists is true, it will check if a file exists based on the filename generated
+  #   from the filename_template
+  # - if a file with that name already exists, it will override it.
+  example_filename_template:
+    url: https://example.com/file.zip
+    save:
+      # the filename template for the downloaded file (optional, default is the original filename from the URL)
+      # it can include placeholders for the original filename, the options are:
+      # - {{.ORIGINAL_FILENAME}}: the original filename from the URL (e.g. file.zip)
+      # - {{.URL}}: the full URL of the file being downloaded (e.g. https://example.com/file.zip)
+      # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
+      # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
+      # - {{.TIME}}: the time of the download (e.g. 12-00-00)
+      # - {{.UUID}}: a unique identifier for the download (e.g. 550e8400-e29b-41d4-a716-446655440000)
+      filename_template: "downloaded_{{.ORIGINAL_FILENAME}}_{{.TIMESTAMP}}"
+
+  # set extension for the downloaded file
+  example_set_extension:
+    url: https://example.com/file.jpeg
+    save:
+      # set the extension or override the existing extension for the downloaded file
+      # it will add the extension to the filename generated from the filename_template
+      # or the original filename if filename_template is not set
+      extension: "jpg"
+
+  #####################################
+  # APPLYING LIMITS AND HANDLING ERRORS
+  #####################################
+
+  # by default, if an error occurs during the download (e.g. network error, file not found, timeout),
+  # it will log the error and continue with the next download (if there are more URLs to download)
+  # the errors are the same for the webpage with the links to download as well as for the file to be downloaded
+
+  # stop on error (by default it will continue with the next download if an error occurs)
+  example_stop_on_error:
+    url: https://example.com/file-that-doesnt-exist.zip
+    stop_on_error: true
+
+  # stop on code error
+  example_stop_on_code_error:
+    url: https://example.com/file-that-doesnt-exist.zip
+    stop_on_code: 404
+
+  # timeout for the HTTP request (in seconds)
+  example_timeout:
+    url: https://example.com/file.zip
+    timeout: 10
+
+  # limit the number of urls to download (e.g. if the url_file contains too many URLs)
+  # not the same as selector_matches_limit, which limits the number of links to parse from a page
+  example_from_file_limit:
+    url: "{{.URL}}" # the URL will be taken from the url_file
+    url_gen_file:
+      var_name: "URL"
+      file: ./urls.txt
+    download_limit: 10
+
+  # selector matches limit
+  # <a href="https://example.com/file1.zip">File 1</a>
+  # <a href="https://example.com/file2.zip">File 2</a>
+  # <a href="https://example.com/file3.zip">File 3</a>
+  # <a href="https://example.com/no.zip">Ignored link</a>
+  # not the same as download_limit, which limits the total number of downloads,
+  example_selector_limit:
+    url: https://example.com/
+    selector: "a"
+    # only parse the first 3 links that match the selector
+    selector_matches_limit: 3
+
+  ###########################
+  # RETRYING FAILED DOWNLOADS
+  ###########################
+
+  # default behavior is to not retry failed downloads, log the error and continue with the next download
+  # retry will be applied to both the webpage with the links to download as well as for the file to be downloaded
+
+  # retry failed downloads
+  example_retry:
+    url: https://example.com/file-that-might-fail.zip
+    # the number of times to retry the download (default is 3)
+    # with the delay between retries increasing exponentially (e.g. 1s, 2s, 4s, etc.)
+    # it will retry on any error (e.g. network error, file not found, timeout)
+    retry: true
+
+  # retry failed downloads with a custom number of retries and delay
+  example_retry_custom:
+    url: https://example.com/file-that-might-fail.zip
+    retry:
+      on_error: true
+      # default is to retry on any 4xx and 5xx error, but here we set it to only retry on server errors
+      on_code: [500, 502, 503] # only retry on specific HTTP status codes (e.g. server errors)
+      # the default is to retry on any exception, but here we set it to only retry on specific exceptions
+      # the exceptions are: TimeoutError, ConnectionError, HTTPError, etc.
+      on_exception: [TimeoutError, ConnectionError] # only retry on specific exceptions (e.g. timeout, connection error)
+      # default is to retry 3 times, but here we set it to 5 retries
+      retries: 5
+      # seconds to wait before retrying the download (default is 1 second)
+      delay: 2
+      # the delay between retries will increase exponentially (e.g. 2s, 4s, 8s, etc.)
+      # default is true
+      exponential_backoff: true
+
+  #############################
+  # USING ENVIRONMENT VARIABLES
+  #############################
+
+  # use environment variables in the download configs
+  example_env_var:
+    url: https://example.com/file.zip
+    # use the environment variable for the base directory where the downloaded file will be saved
+    base_download_dir: $BASE_DOWNLOAD_DIR
+
+  # override the environment variable per download config
+  example_env_var_override:
+    url: https://example.com/file.zip
+    # override the environment variable
+    env:
+      BASE_DOWNLOAD_DIR: "./another-downloads"
+    base_download_dir: $BASE_DOWNLOAD_DIR
+
+  ################
+  # AUTHENTICATION
+  ################
+
+  # IMPORTANT: credentials will be redacted in the logs and metadata
+
+  # use basic authentication for the download
+  example_basic_auth:
+    url: https://example.com/protected/file.zip
+    auth:
+      type: basic
+      username: "your_username"
+      password: "your_password"
+
+  # use bearer token authentication for the download
+  example_bearer_token_auth:
+    url: https://example.com/protected/file.zip
+    auth:
+      type: bearer
+      token: "your_bearer_token"
+
+  # use API key authentication for the download
+  example_api_key_auth:
+    url: https://example.com/protected/file.zip
+    auth:
+      type: api_key
+      key_name: "X-API-Key" # the name of the header or query parameter that contains the API key
+      key_value: "your_api_key"
+      # where to include the API key (header or query) (default is header)
+      # options: header, query, cookie
+      key_in: header
+
+  ##########
+  # METADATA
+  ##########
+
+  # metadata template json:
+  # {
+  #   "main_url": "{{.URL}}",
+  #   "download_url": "{{.DOWNLOAD_URL}}",
+  #   "original_filename": "{{.ORIGINAL_FILENAME}}",
+  #   "saved_filename": "{{.SAVED_FILENAME}}",
+  #   "timestamp": "{{.TIMESTAMP}}",
+  #   "size": "{{.SIZE}}",
+  #   "mime_type": "{{.MIME_TYPE}}",
+  #   "extracted_metadata": {
+  #     "title": "{{.EXTRACTED.title}}",
+  #     "author": "{{.EXTRACTED.author}}",
+  #     ...
+  #   },
+  #  "download_task_name": "{{.TASK_NAME}}",
+  # }
+
+  # save metadata for the downloaded file
+  example_metadata:
+    url: https://example.com/file.zip
+    save:
+      save_metadata: true
+      # the filename for the metadata file is as follows: final_filename + _metadata.json
+      # e.g. if the downloaded file is saved as "custom_name.zip", the metadata file will be saved as "custom_name_metadata.json"
+      # always alongside the downloaded file in the same directory
+
+  ##########
+  # SECURITY
+  ##########
+
+  # follow redirects (default is true)
+  example_follow_redirects:
+    url: https://example.com/file.zip
+    security:
+      follow_redirects: true
+
+  # allow insecure HTTP (default is false, which means it will only allow HTTPS)
+  example_allow_insecure_http:
+    url: http://example.com/file.zip
+    security:
+      allow_insecure_http: true
+
+  # allow self-signed certificates (default is false)
+  example_self_signed_cert:
+    url: https://example.com/file.zip
+    security:
+      allow_self_signed_cert: true
+
+  # restrict domains (only allow downloading from specific domains)
+  example_restrict_domains:
+    url: https://example.com/file.zip
+    security:
+      allowed_domains: ["example.com", "another-example.com"]
+
+  # restrict file types (only allow downloading files with specific extensions)
+  example_restrict_file_types:
+    url: https://example.com/
+    selector: "a"
+    security:
+      allowed_file_types: ["zip", "pdf", "jpg"]

@@ -1,0 +1,141 @@
+package config
+
+import "gopkg.in/yaml.v3"
+
+const (
+	DefaultConcurrency      = 10
+	DefaultLogLevel         = "INFO"
+	DefaultFilenameTemplate = "{{.ORIGINAL_FILENAME}}"
+	DefaultMaxDepth         = 1
+)
+
+type Config struct {
+	EnvFile   []string                 `yaml:"env_file"`
+	Env       map[string]string        `yaml:"env"`
+	Config    WorkerConfig             `yaml:"config"`
+	Downloads map[string]*DownloadTask `yaml:"downloads"`
+}
+
+type WorkerConfig struct {
+	Concurrency        int               `yaml:"concurrency"`
+	LogLevel           string            `yaml:"log_level"`
+	Save               SaveConfig        `yaml:"save"`
+	DefaultAttrMapping map[string]string `yaml:"default_attr_mappings"`
+}
+
+type DownloadTask struct {
+	URL                   string            `yaml:"url"`
+	Selector              string            `yaml:"selector"`
+	Attr                  string            `yaml:"attr"`
+	RegexFilter           string            `yaml:"regex_filter"`
+	AttrValRegexFilter    string            `yaml:"attr_val_regex_filter"`
+	URLGenRange           *URLGenRange      `yaml:"url_gen_range"`
+	URLGenList            *URLGenList       `yaml:"url_gen_list"`
+	URLGenFile            *URLGenFile       `yaml:"url_gen_file"`
+	URLGenDates           *URLGenDates      `yaml:"url_gen_dates"`
+	ForceDownload         bool              `yaml:"force_download"`
+	Save                  SaveConfig        `yaml:"save"`
+	BaseDownloadDir       string            `yaml:"base_download_dir"`
+	StopOnError           bool              `yaml:"stop_on_error"`
+	StopOnCode            int               `yaml:"stop_on_code"`
+	Timeout               int               `yaml:"timeout"`
+	DownloadLimit         int               `yaml:"download_limit"`
+	SelectorMatchesLimit  int               `yaml:"selector_matches_limit"`
+	Retry                 Retry             `yaml:"retry"`
+	Env                   map[string]string `yaml:"env"`
+	Auth                  *AuthConfig       `yaml:"auth"`
+	Security              SecurityConfig    `yaml:"security"`
+	MaxDepth              int               `yaml:"max_depth"`
+}
+
+type URLGenRange struct {
+	VarName    string `yaml:"var_name"`
+	RangeStart int    `yaml:"range_start"`
+	RangeEnd   int    `yaml:"range_end"`
+	Step       int    `yaml:"step"`
+}
+
+type URLGenList struct {
+	VarName string   `yaml:"var_name"`
+	Values  []string `yaml:"values"`
+}
+
+type URLGenFile struct {
+	VarName string `yaml:"var_name"`
+	File    string `yaml:"file"`
+}
+
+type URLGenDates struct {
+	VarName        string `yaml:"var_name"`
+	DateRangeStart string `yaml:"date_range_start"`
+	DateRangeEnd   string `yaml:"date_range_end"`
+	DateFormat     string `yaml:"date_format"`
+}
+
+type SaveConfig struct {
+	BaseDownloadDir string `yaml:"base_download_dir"`
+	FilenameTemplate string `yaml:"filename_template"`
+	Filename        string `yaml:"filename"`
+	OverrideIfExists bool   `yaml:"override_if_exists"`
+	Extension       string `yaml:"extension"`
+	SaveMetadata    bool   `yaml:"save_metadata"`
+}
+
+type Retry struct {
+	Enabled bool
+	Config  RetryConfig
+}
+
+type RetryConfig struct {
+	OnError            bool     `yaml:"on_error"`
+	OnCode             []int    `yaml:"on_code"`
+	OnException        []string `yaml:"on_exception"`
+	Retries            int      `yaml:"retries"`
+	Delay              int      `yaml:"delay"`
+	ExponentialBackoff *bool    `yaml:"exponential_backoff"`
+}
+
+func (r *Retry) UnmarshalYAML(value *yaml.Node) error {
+	type retryAlias RetryConfig
+	if value.Kind == yaml.ScalarNode {
+		var enabled bool
+		if err := value.Decode(&enabled); err != nil {
+			return err
+		}
+		r.Enabled = enabled
+		if enabled {
+			r.Config = defaultRetryConfig()
+		}
+		return nil
+	}
+
+	if value.Kind == yaml.MappingNode {
+		var cfg retryAlias
+		if err := value.Decode(&cfg); err != nil {
+			return err
+		}
+		r.Enabled = true
+		r.Config = RetryConfig(cfg)
+		return nil
+	}
+
+	return nil
+}
+
+type AuthConfig struct {
+	Type     string `yaml:"type"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	Token    string `yaml:"token"`
+	KeyName  string `yaml:"key_name"`
+	KeyValue string `yaml:"key_value"`
+	KeyIn    string `yaml:"key_in"`
+}
+
+type SecurityConfig struct {
+	FollowRedirects   *bool    `yaml:"follow_redirects"`
+	AllowInsecureHTTP bool     `yaml:"allow_insecure_http"`
+	AllowSelfSigned   bool     `yaml:"allow_self_signed_cert"`
+	AllowedDomains    []string `yaml:"allowed_domains"`
+	AllowedFileTypes  []string `yaml:"allowed_file_types"`
+}
