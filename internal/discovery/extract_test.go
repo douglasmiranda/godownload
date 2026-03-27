@@ -59,3 +59,33 @@ func TestExtractURLs_AttrRegex(t *testing.T) {
 		t.Fatalf("unexpected URLs: %#v", got)
 	}
 }
+
+func TestExtractURLs_DefaultAttrMapping_WithComplexSelector(t *testing.T) {
+	html := `<div class="download-link"><a href="/doc.pdf">Download</a></div>`
+	got, err := ExtractURLs("https://example.com", strings.NewReader(html), ExtractOptions{
+		Selector:            ".download-link a",
+		DefaultAttrMappings: map[string]string{"a": "href"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"https://example.com/doc.pdf"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected URLs: %#v", got)
+	}
+}
+
+func TestExtractURLs_DefaultAttrMapping_WithClassOnlySelector(t *testing.T) {
+	html := `<a class="download-link" href="/doc.pdf">Download</a>`
+	got, err := ExtractURLs("https://example.com", strings.NewReader(html), ExtractOptions{
+		Selector:            ".download-link",
+		DefaultAttrMappings: map[string]string{"a": "href"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"https://example.com/doc.pdf"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected URLs: %#v", got)
+	}
+}
