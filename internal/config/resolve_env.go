@@ -26,13 +26,35 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 
 	expandField("config.save.base_download_dir", &cfg.Config.Save.BaseDownloadDir, globalVars, "", &diags)
 	expandField("config.save.filename_template", &cfg.Config.Save.FilenameTemplate, globalVars, "", &diags)
+	expandField("config.save.filename", &cfg.Config.Save.Filename, globalVars, "", &diags)
+	expandField("config.save.extension", &cfg.Config.Save.Extension, globalVars, "", &diags)
+	expandField("config.selector", &cfg.Config.Selector, globalVars, "", &diags)
+	expandField("config.attr", &cfg.Config.Attr, globalVars, "", &diags)
+	expandField("config.regex_filter", &cfg.Config.RegexFilter, globalVars, "", &diags)
+	expandField("config.attr_val_regex_filter", &cfg.Config.AttrValRegexFilter, globalVars, "", &diags)
+	expandField("config.base_download_dir", &cfg.Config.BaseDownloadDir, globalVars, "", &diags)
+	if cfg.Config.URLGenFile != nil {
+		expandField("config.url_gen_file.file", &cfg.Config.URLGenFile.File, globalVars, "", &diags)
+	}
+	if cfg.Config.URLGenDates != nil {
+		expandField("config.url_gen_dates.date_range_start", &cfg.Config.URLGenDates.DateRangeStart, globalVars, "", &diags)
+		expandField("config.url_gen_dates.date_range_end", &cfg.Config.URLGenDates.DateRangeEnd, globalVars, "", &diags)
+		expandField("config.url_gen_dates.date_format", &cfg.Config.URLGenDates.DateFormat, globalVars, "", &diags)
+	}
+	if cfg.Config.Auth != nil {
+		expandField("config.auth.username", &cfg.Config.Auth.Username, globalVars, "", &diags)
+		expandField("config.auth.password", &cfg.Config.Auth.Password, globalVars, "", &diags)
+		expandField("config.auth.token", &cfg.Config.Auth.Token, globalVars, "", &diags)
+		expandField("config.auth.key_name", &cfg.Config.Auth.KeyName, globalVars, "", &diags)
+		expandField("config.auth.key_value", &cfg.Config.Auth.KeyValue, globalVars, "", &diags)
+	}
 
 	for name, task := range cfg.Downloads {
 		if task == nil {
 			continue
 		}
 
-		taskVars := gdEnv.MergeWithPrecedence(globalVars, task.Env)
+		taskVars := gdEnv.MergeWithPrecedence(globalVars, cfg.Config.Env, task.Env)
 		expandField("url", &task.URL, taskVars, name, &diags)
 		expandField("selector", &task.Selector, taskVars, name, &diags)
 		expandField("attr", &task.Attr, taskVars, name, &diags)
@@ -66,6 +88,12 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 	}
 
 	cfg.Config.Save.BaseDownloadDir = toAbsoluteOrURL(cfg.Config.Save.BaseDownloadDir, configDir)
+	if cfg.Config.BaseDownloadDir != "" {
+		cfg.Config.BaseDownloadDir = toAbsoluteOrURL(cfg.Config.BaseDownloadDir, configDir)
+	}
+	if cfg.Config.URLGenFile != nil && cfg.Config.URLGenFile.File != "" {
+		cfg.Config.URLGenFile.File = toAbsoluteOrURL(cfg.Config.URLGenFile.File, configDir)
+	}
 	for _, task := range cfg.Downloads {
 		if task == nil {
 			continue
