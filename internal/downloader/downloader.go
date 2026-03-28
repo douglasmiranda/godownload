@@ -318,15 +318,6 @@ func shouldRetry(cfg config.RetryConfig, err error, statusCode int) bool {
 		if cfg.OnError {
 			return true
 		}
-		for _, ex := range cfg.OnException {
-			ex = strings.TrimSpace(ex)
-			if ex == "" {
-				continue
-			}
-			if strings.Contains(err.Error(), ex) {
-				return true
-			}
-		}
 	}
 	if statusCode != 0 {
 		if len(cfg.OnCode) == 0 {

@@ -198,7 +198,6 @@ func cloneURLGenDates(in *URLGenDates) *URLGenDates {
 func cloneRetry(in Retry) Retry {
 	out := in
 	out.Config.OnCode = append([]int{}, in.Config.OnCode...)
-	out.Config.OnException = append([]string{}, in.Config.OnException...)
 	if in.Config.ExponentialBackoff != nil {
 		v := *in.Config.ExponentialBackoff
 		out.Config.ExponentialBackoff = &v
@@ -246,9 +245,6 @@ func mergeRetryDefaults(task *DownloadTask, defaults Retry) Retry {
 	}
 	if !task.hasField("retry.on_code") && len(out.Config.OnCode) == 0 && len(defaults.Config.OnCode) > 0 {
 		out.Config.OnCode = append([]int{}, defaults.Config.OnCode...)
-	}
-	if !task.hasField("retry.on_exception") && len(out.Config.OnException) == 0 && len(defaults.Config.OnException) > 0 {
-		out.Config.OnException = append([]string{}, defaults.Config.OnException...)
 	}
 	if !task.hasField("retry.retries") {
 		out.Config.Retries = defaults.Config.Retries

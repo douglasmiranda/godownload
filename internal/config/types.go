@@ -153,12 +153,11 @@ type Retry struct {
 }
 
 type RetryConfig struct {
-	OnError            bool     `yaml:"on_error"`
-	OnCode             []int    `yaml:"on_code"`
-	OnException        []string `yaml:"on_exception"`
-	Retries            int      `yaml:"retries"`
-	Delay              int      `yaml:"delay"`
-	ExponentialBackoff *bool    `yaml:"exponential_backoff"`
+	OnError            bool  `yaml:"on_error"`
+	OnCode             []int `yaml:"on_code"`
+	Retries            int   `yaml:"retries"`
+	Delay              int   `yaml:"delay"`
+	ExponentialBackoff *bool `yaml:"exponential_backoff"`
 }
 
 func (r *Retry) UnmarshalYAML(value *yaml.Node) error {

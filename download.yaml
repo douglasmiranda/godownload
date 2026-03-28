@@ -302,9 +302,6 @@ downloads:
       on_error: true
       # default is to retry on any 4xx and 5xx error, but here we set it to only retry on server errors
       on_code: [500, 502, 503] # only retry on specific HTTP status codes (e.g. server errors)
-      # the default is to retry on any exception, but here we set it to only retry on specific exceptions
-      # the exceptions are: TimeoutError, ConnectionError, HTTPError, etc.
-      on_exception: [TimeoutError, ConnectionError] # only retry on specific exceptions (e.g. timeout, connection error)
       # default is to retry 3 times, but here we set it to 5 retries
       retries: 5
       # seconds to wait before retrying the download (default is 1 second)

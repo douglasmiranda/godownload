@@ -109,7 +109,6 @@ If retry is enabled and values are not explicitly set:
 | `retry.delay` | `1` |
 | `retry.exponential_backoff` | `true` |
 | `retry.on_code` | empty |
-| `retry.on_exception` | empty |
 
 ## Notes on future default changes
 
