@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/douglasmiranda/godownload/internal/config"
@@ -39,7 +40,7 @@ func TestSave_SkipWhenExistsAndNotForced(t *testing.T) {
 		t.Fatal(err)
 	}
 	task := &config.DownloadTask{
-		URL: "https://example.com/a.pdf",
+		URL:  "https://example.com/a.pdf",
 		Save: config.SaveConfig{BaseDownloadDir: dir},
 	}
 	result, err := Save("task1", task, "https://example.com/a.pdf", []byte("new"), "application/pdf")
@@ -61,7 +62,7 @@ func TestSave_OverrideWhenForcedAndAllowed(t *testing.T) {
 		URL:           "https://example.com/a.pdf",
 		ForceDownload: true,
 		Save: config.SaveConfig{
-			BaseDownloadDir: dir,
+			BaseDownloadDir:  dir,
 			OverrideIfExists: true,
 		},
 	}
@@ -75,5 +76,47 @@ func TestSave_OverrideWhenForcedAndAllowed(t *testing.T) {
 	}
 	if string(b) != "new" {
 		t.Fatalf("expected override with new content, got %q", string(b))
+	}
+}
+
+func TestSave_TemplateKeepsOriginalExtensionAtEnd(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/file1.txt",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "downloaded_{{.ORIGINAL_FILENAME}}_{{.TIMESTAMP}}",
+		},
+	}
+
+	res, err := Save("task1", task, "https://example.com/file1.txt", []byte("data"), "text/plain")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(res.SavedFileName, ".txt") {
+		t.Fatalf("expected saved filename to end with .txt, got %q", res.SavedFileName)
+	}
+	if !strings.Contains(res.SavedFileName, "file1.txt") {
+		t.Fatalf("expected saved filename to include ORIGINAL_FILENAME, got %q", res.SavedFileName)
+	}
+}
+
+func TestSave_TemplateUsesConfiguredExtensionAtEnd(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/file1.txt",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "downloaded_{{.ORIGINAL_FILENAME}}_{{.TIMESTAMP}}",
+			Extension:        "pdf",
+		},
+	}
+
+	res, err := Save("task1", task, "https://example.com/file1.txt", []byte("data"), "application/pdf")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(res.SavedFileName, ".pdf") {
+		t.Fatalf("expected saved filename to end with .pdf, got %q", res.SavedFileName)
 	}
 }

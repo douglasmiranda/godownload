@@ -120,16 +120,36 @@ func resolveFilename(task *config.DownloadTask, downloadURL string, originalName
 	if name == "" {
 		return "", fmt.Errorf("resolved filename is empty")
 	}
-	return applyExtension(name, task.Save.Extension), nil
+	targetExt := normalizeExtension(task.Save.Extension)
+	if targetExt == "" {
+		targetExt = normalizeExtension(path.Ext(originalName))
+	}
+	return ensureTrailingExtension(name, targetExt), nil
 }
 
 func applyExtension(filename string, ext string) string {
-	norm := strings.TrimPrefix(strings.TrimSpace(ext), ".")
+	norm := normalizeExtension(ext)
 	if norm == "" {
 		return filename
 	}
 	base := strings.TrimSuffix(filename, path.Ext(filename))
 	return base + "." + norm
+}
+
+func ensureTrailingExtension(filename string, ext string) string {
+	norm := normalizeExtension(ext)
+	if norm == "" {
+		return filename
+	}
+	suffix := "." + norm
+	if strings.HasSuffix(strings.ToLower(filename), strings.ToLower(suffix)) {
+		return filename
+	}
+	return filename + suffix
+}
+
+func normalizeExtension(ext string) string {
+	return strings.TrimPrefix(strings.TrimSpace(ext), ".")
 }
 
 func inferOriginalName(downloadURL string) string {
