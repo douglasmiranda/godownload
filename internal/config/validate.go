@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,13 +22,13 @@ func Validate(cfg *Config) []Diagnostic {
 			diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "task", Message: "task cannot be null"})
 			continue
 		}
-		diags = append(diags, validateTask(name, task)...)
+		diags = append(diags, validateTask(name, task, cfg.Config.hasField("save.filename_template"))...)
 	}
 
 	return diags
 }
 
-func validateTask(name string, task *DownloadTask) []Diagnostic {
+func validateTask(name string, task *DownloadTask, globalFilenameTemplateSet bool) []Diagnostic {
 	diags := make([]Diagnostic, 0)
 
 	if strings.TrimSpace(task.URL) == "" {
@@ -41,19 +42,19 @@ func validateTask(name string, task *DownloadTask) []Diagnostic {
 	urlGenCount := 0
 	if task.URLGenRange != nil {
 		urlGenCount++
-		diags = append(diags, validateURLGenRange(name, task.URLGenRange)...)
+		diags = append(diags, validateURLGenRange(name, task.URL, task.URLGenRange)...)
 	}
 	if task.URLGenList != nil {
 		urlGenCount++
-		diags = append(diags, validateURLGenList(name, task.URLGenList)...)
+		diags = append(diags, validateURLGenList(name, task.URL, task.URLGenList)...)
 	}
 	if task.URLGenFile != nil {
 		urlGenCount++
-		diags = append(diags, validateURLGenFile(name, task.URLGenFile)...)
+		diags = append(diags, validateURLGenFile(name, task.URL, task.URLGenFile)...)
 	}
 	if task.URLGenDates != nil {
 		urlGenCount++
-		diags = append(diags, validateURLGenDates(name, task.URLGenDates)...)
+		diags = append(diags, validateURLGenDates(name, task.URL, task.URLGenDates)...)
 	}
 	if urlGenCount > 1 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "url_gen_*", Message: "only one url_gen_* block can be configured per task"})
@@ -73,8 +74,10 @@ func validateTask(name string, task *DownloadTask) []Diagnostic {
 	if task.Timeout < 0 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "timeout", Message: "must be greater than or equal to 0"})
 	}
-	if task.StopOnCode != 0 && (task.StopOnCode < 100 || task.StopOnCode > 599) {
-		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "stop_on_code", Message: "must be a valid HTTP status code"})
+	for _, code := range task.StopAllTasks.OnHTTPCode {
+		if code < 100 || code > 599 {
+			diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "stop_all_tasks.on_http_code", Message: fmt.Sprintf("invalid HTTP code: %d", code)})
+		}
 	}
 	if task.DownloadLimit < 0 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "download_limit", Message: "must be greater than or equal to 0"})
@@ -86,7 +89,7 @@ func validateTask(name string, task *DownloadTask) []Diagnostic {
 	if strings.TrimSpace(task.Save.Filename) != "" && taskCanResolveMultipleURLs(task) {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "save.filename", Message: "cannot be used when selector or url_gen_* can resolve multiple URLs"})
 	}
-	if strings.TrimSpace(task.Save.Filename) != "" && strings.TrimSpace(task.Save.FilenameTemplate) != "" {
+	if strings.TrimSpace(task.Save.Filename) != "" && (task.hasField("save.filename_template") || globalFilenameTemplateSet) {
 		diags = append(diags, Diagnostic{Severity: SeverityWarning, TaskName: name, Field: "save.filename_template", Message: "is ignored when save.filename is set"})
 	}
 	if strings.TrimSpace(task.BaseDownloadDir) != "" {
@@ -121,11 +124,12 @@ func validateURL(raw string) error {
 	return nil
 }
 
-func validateURLGenRange(taskName string, cfg *URLGenRange) []Diagnostic {
+func validateURLGenRange(taskName string, taskURL string, cfg *URLGenRange) []Diagnostic {
 	diags := make([]Diagnostic, 0)
 	if strings.TrimSpace(cfg.VarName) == "" {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_range.var_name", Message: "is required"})
 	}
+	diags = append(diags, validateURLTemplateVar(taskName, taskURL, "url_gen_range.var_name", cfg.VarName)...)
 	if cfg.Step == 0 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_range.step", Message: "must not be zero"})
 	}
@@ -135,33 +139,36 @@ func validateURLGenRange(taskName string, cfg *URLGenRange) []Diagnostic {
 	return diags
 }
 
-func validateURLGenList(taskName string, cfg *URLGenList) []Diagnostic {
+func validateURLGenList(taskName string, taskURL string, cfg *URLGenList) []Diagnostic {
 	diags := make([]Diagnostic, 0)
 	if strings.TrimSpace(cfg.VarName) == "" {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_list.var_name", Message: "is required"})
 	}
+	diags = append(diags, validateURLTemplateVar(taskName, taskURL, "url_gen_list.var_name", cfg.VarName)...)
 	if len(cfg.Values) == 0 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_list.values", Message: "must have at least one value"})
 	}
 	return diags
 }
 
-func validateURLGenFile(taskName string, cfg *URLGenFile) []Diagnostic {
+func validateURLGenFile(taskName string, taskURL string, cfg *URLGenFile) []Diagnostic {
 	diags := make([]Diagnostic, 0)
 	if strings.TrimSpace(cfg.VarName) == "" {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_file.var_name", Message: "is required"})
 	}
+	diags = append(diags, validateURLTemplateVar(taskName, taskURL, "url_gen_file.var_name", cfg.VarName)...)
 	if strings.TrimSpace(cfg.File) == "" {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_file.file", Message: "is required"})
 	}
 	return diags
 }
 
-func validateURLGenDates(taskName string, cfg *URLGenDates) []Diagnostic {
+func validateURLGenDates(taskName string, taskURL string, cfg *URLGenDates) []Diagnostic {
 	diags := make([]Diagnostic, 0)
 	if strings.TrimSpace(cfg.VarName) == "" {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_dates.var_name", Message: "is required"})
 	}
+	diags = append(diags, validateURLTemplateVar(taskName, taskURL, "url_gen_dates.var_name", cfg.VarName)...)
 	if strings.TrimSpace(cfg.DateRangeStart) == "" {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_dates.date_range_start", Message: "is required"})
 	}
@@ -205,6 +212,52 @@ func dateFormatToGoLayout(format string) (string, error) {
 	}
 }
 
+var urlTemplateVarPattern = regexp.MustCompile(`\{\{\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
+
+func validateURLTemplateVar(taskName string, taskURL string, field string, varName string) []Diagnostic {
+	if strings.TrimSpace(taskURL) == "" || strings.TrimSpace(varName) == "" {
+		return nil
+	}
+	if urlTemplateContainsVar(taskURL, varName) {
+		return nil
+	}
+	available := extractURLTemplateVars(taskURL)
+	msg := fmt.Sprintf("url must reference %q via {{.%s}}", varName, varName)
+	if len(available) > 0 {
+		msg = fmt.Sprintf("%s (found template vars: %s)", msg, strings.Join(available, ", "))
+	}
+	return []Diagnostic{{
+		Severity: SeverityError,
+		TaskName: taskName,
+		Field:    field,
+		Message:  msg,
+	}}
+}
+
+func urlTemplateContainsVar(taskURL string, varName string) bool {
+	for _, m := range urlTemplateVarPattern.FindAllStringSubmatch(taskURL, -1) {
+		if len(m) > 1 && m[1] == varName {
+			return true
+		}
+	}
+	return false
+}
+
+func extractURLTemplateVars(taskURL string) []string {
+	seen := map[string]struct{}{}
+	for _, m := range urlTemplateVarPattern.FindAllStringSubmatch(taskURL, -1) {
+		if len(m) > 1 {
+			seen[m[1]] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for v := range seen {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func validateRetry(taskName string, retry Retry) []Diagnostic {
 	if !retry.Enabled {
 		return nil
@@ -216,9 +269,9 @@ func validateRetry(taskName string, retry Retry) []Diagnostic {
 	if retry.Config.Delay < 0 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "retry.delay", Message: "must be greater than or equal to 0"})
 	}
-	for _, code := range retry.Config.OnCode {
+	for _, code := range retry.Config.OnHTTPCode {
 		if code < 100 || code > 599 {
-			diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "retry.on_code", Message: fmt.Sprintf("invalid HTTP code: %d", code)})
+			diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "retry.on_http_code", Message: fmt.Sprintf("invalid HTTP code: %d", code)})
 		}
 	}
 	return diags

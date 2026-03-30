@@ -159,7 +159,7 @@ func inferOriginalName(downloadURL string) string {
 	}
 	name := path.Base(u.Path)
 	if strings.TrimSpace(name) == "" || name == "/" || name == "." {
-		return "downloaded_file"
+		return u.Hostname() + "_downloaded_file"
 	}
 	return name
 }

@@ -244,15 +244,23 @@ downloads:
   # it will log the error and continue with the next download (if there are more URLs to download)
   # the errors are the same for the webpage with the links to download as well as for the file to be downloaded
 
-  # stop on error (by default it will continue with the next download if an error occurs)
-  example_stop_on_error:
+  # stop all tasks on runtime error (by default it will continue when an error occurs)
+  example_stop_all_tasks_runtime_error:
     url: https://example.com/file-that-doesnt-exist.zip
-    stop_on_error: true
+    # when stop_all_tasks.on_runtime_error is true, retries are respected first,
+    # then all remaining tasks are aborted if the task still fails.
+    stop_all_tasks:
+      # false if not set
+      on_runtime_error: true
 
-  # stop on code error
-  example_stop_on_code_error:
+  # stop all tasks on specific HTTP codes
+  example_stop_all_tasks_http_code:
     url: https://example.com/file-that-doesnt-exist.zip
-    stop_on_code: 404
+    # if retry is enabled, it retries first; if still failing and code matches,
+    # all remaining tasks are aborted.
+    stop_all_tasks:
+      # if stop_all_tasks is set, on_http_code is optional and unset until specifically set
+      on_http_code: [404, 500, 502, 503, 504]
 
   # timeout for the HTTP request (in seconds)
   example_timeout:
@@ -299,9 +307,11 @@ downloads:
   example_retry_custom:
     url: https://example.com/file-that-might-fail.zip
     retry:
-      on_error: true
+      # errors like network errors, timeouts, etc.
+      # if retry is true, on_runtime_error will be also true
+      on_runtime_error: true
       # default is to retry on any 4xx and 5xx error, but here we set it to only retry on server errors
-      on_code: [500, 502, 503] # only retry on specific HTTP status codes (e.g. server errors)
+      on_http_code: [500, 502, 503] # only retry on specific HTTP status codes (e.g. server errors)
       # default is to retry 3 times, but here we set it to 5 retries
       retries: 5
       # seconds to wait before retrying the download (default is 1 second)

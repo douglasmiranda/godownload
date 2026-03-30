@@ -18,14 +18,14 @@ import (
 const reportSchemaVersion = "1"
 
 type taskReport struct {
-	TaskName       string   `json:"task_name"`
-	Saved          int      `json:"saved"`
-	Skipped        int      `json:"skipped"`
-	Warnings       []string `json:"warnings"`
-	Errors         []string `json:"errors"`
-	SavedFiles     []string `json:"saved_files"`
-	MetadataFiles  []string `json:"metadata_files"`
-	Aborted        bool     `json:"aborted"`
+	TaskName      string   `json:"task_name"`
+	Saved         int      `json:"saved"`
+	Skipped       int      `json:"skipped"`
+	Warnings      []string `json:"warnings"`
+	Errors        []string `json:"errors"`
+	SavedFiles    []string `json:"saved_files"`
+	MetadataFiles []string `json:"metadata_files"`
+	Aborted       bool     `json:"aborted"`
 }
 
 type runReport struct {
@@ -173,11 +173,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			}
 		}
 
-		if task != nil && task.StopOnError && len(res.Errors) > 0 {
+		if task != nil && res.AbortAll {
 			stopTriggered = true
 			report.Tasks[len(report.Tasks)-1].Aborted = true
 			if *outputMode == "text" {
-				fmt.Fprintf(stderr, "stop_on_error triggered by task %s; aborting remaining tasks\n", name)
+				fmt.Fprintf(stderr, "stop_all_tasks triggered by task %s; aborting remaining tasks\n", name)
 			}
 			break
 		}

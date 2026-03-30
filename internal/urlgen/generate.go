@@ -2,6 +2,7 @@ package urlgen
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,9 @@ func Generate(task *config.DownloadTask, fileLoader FileLoader) ([]string, error
 }
 
 func generateRange(tpl string, cfg *config.URLGenRange) ([]string, error) {
+	if err := validateTemplateVar(tpl, cfg.VarName); err != nil {
+		return nil, err
+	}
 	step := cfg.Step
 	if step == 0 {
 		step = 1
@@ -49,6 +53,9 @@ func generateRange(tpl string, cfg *config.URLGenRange) ([]string, error) {
 }
 
 func generateList(tpl string, cfg *config.URLGenList) ([]string, error) {
+	if err := validateTemplateVar(tpl, cfg.VarName); err != nil {
+		return nil, err
+	}
 	if len(cfg.Values) == 0 {
 		return nil, fmt.Errorf("url_gen_list.values must not be empty")
 	}
@@ -60,6 +67,9 @@ func generateList(tpl string, cfg *config.URLGenList) ([]string, error) {
 }
 
 func generateFromFile(tpl string, cfg *config.URLGenFile, fileLoader FileLoader) ([]string, error) {
+	if err := validateTemplateVar(tpl, cfg.VarName); err != nil {
+		return nil, err
+	}
 	lines, err := fileLoader(cfg.File)
 	if err != nil {
 		return nil, err
@@ -76,6 +86,9 @@ func generateFromFile(tpl string, cfg *config.URLGenFile, fileLoader FileLoader)
 }
 
 func generateDates(tpl string, cfg *config.URLGenDates) ([]string, error) {
+	if err := validateTemplateVar(tpl, cfg.VarName); err != nil {
+		return nil, err
+	}
 	layout, err := dateFormatToGoLayout(cfg.DateFormat)
 	if err != nil {
 		return nil, err
@@ -99,8 +112,22 @@ func generateDates(tpl string, cfg *config.URLGenDates) ([]string, error) {
 }
 
 func replaceVar(tpl, varName, value string) string {
-	needle := "{{." + varName + "}}"
-	return strings.ReplaceAll(tpl, needle, value)
+	pattern := regexp.MustCompile(`\{\{\s*\.\s*` + regexp.QuoteMeta(varName) + `\s*\}\}`)
+	return pattern.ReplaceAllString(tpl, value)
+}
+
+var templateVarPattern = regexp.MustCompile(`\{\{\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
+
+func validateTemplateVar(tpl string, varName string) error {
+	if strings.TrimSpace(varName) == "" {
+		return nil
+	}
+	for _, match := range templateVarPattern.FindAllStringSubmatch(tpl, -1) {
+		if len(match) > 1 && match[1] == varName {
+			return nil
+		}
+	}
+	return fmt.Errorf("url template must reference var_name %q via {{.%s}}", varName, varName)
 }
 
 func dateFormatToGoLayout(format string) (string, error) {

@@ -25,8 +25,8 @@ func TestRunTask_DirectDownload(t *testing.T) {
 
 	dir := t.TempDir()
 	task := &config.DownloadTask{
-		URL: server.URL + "/file.pdf",
-		Save: config.SaveConfig{BaseDownloadDir: dir},
+		URL:      server.URL + "/file.pdf",
+		Save:     config.SaveConfig{BaseDownloadDir: dir},
 		Security: config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
 	}
 
@@ -86,7 +86,7 @@ func TestRunTask_BlocksDisallowedDomain(t *testing.T) {
 
 	dir := t.TempDir()
 	task := &config.DownloadTask{
-		URL: server.URL + "/file.pdf",
+		URL:  server.URL + "/file.pdf",
 		Save: config.SaveConfig{BaseDownloadDir: dir},
 		Security: config.SecurityConfig{
 			AllowedDomains:   []string{"example.com"},
@@ -113,10 +113,10 @@ func TestRunTask_AppliesAuthHeader(t *testing.T) {
 
 	dir := t.TempDir()
 	task := &config.DownloadTask{
-		URL: server.URL + "/file.pdf",
-		Save: config.SaveConfig{BaseDownloadDir: dir},
+		URL:      server.URL + "/file.pdf",
+		Save:     config.SaveConfig{BaseDownloadDir: dir},
 		Security: config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
-		Auth: &config.AuthConfig{Type: "bearer", Token: "secret"},
+		Auth:     &config.AuthConfig{Type: "bearer", Token: "secret"},
 	}
 
 	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1})
@@ -143,10 +143,10 @@ func TestRunTask_RetryOnServerError(t *testing.T) {
 
 	dir := t.TempDir()
 	task := &config.DownloadTask{
-		URL: server.URL + "/file.pdf",
-		Save: config.SaveConfig{BaseDownloadDir: dir},
+		URL:      server.URL + "/file.pdf",
+		Save:     config.SaveConfig{BaseDownloadDir: dir},
 		Security: config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
-		Retry: config.Retry{Enabled: true, Config: config.RetryConfig{OnError: true, Retries: 2, Delay: 1}},
+		Retry:    config.Retry{Enabled: true, Config: config.RetryConfig{OnRuntimeError: true, Retries: 2, Delay: 1}},
 	}
 
 	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1})
@@ -159,5 +159,57 @@ func TestRunTask_RetryOnServerError(t *testing.T) {
 	files, _ := filepath.Glob(filepath.Join(dir, "*"))
 	if len(files) == 0 {
 		t.Fatal("expected downloaded file")
+	}
+}
+
+func TestRunTask_StopAllTasksOnRuntimeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:          server.URL + "/file.pdf",
+		Save:         config.SaveConfig{BaseDownloadDir: dir},
+		Security:     config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
+		StopAllTasks: config.StopAllTasks{OnRuntimeError: true},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected task errors")
+	}
+	if !res.AbortAll {
+		t.Fatal("expected AbortAll to be true")
+	}
+}
+
+func TestRunTask_StopAllTasksOnHTTPCodeAfterRetries(t *testing.T) {
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		http.Error(w, "temporary", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:          server.URL + "/file.pdf",
+		Save:         config.SaveConfig{BaseDownloadDir: dir},
+		Security:     config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
+		Retry:        config.Retry{Enabled: true, Config: config.RetryConfig{OnHTTPCode: []int{500}, Retries: 2, Delay: 1}},
+		StopAllTasks: config.StopAllTasks{OnHTTPCode: []int{500}},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected task errors")
+	}
+	if !res.AbortAll {
+		t.Fatal("expected AbortAll to be true")
+	}
+	if attempt != 3 {
+		t.Fatalf("expected 3 attempts (retries respected before stop), got %d", attempt)
 	}
 }

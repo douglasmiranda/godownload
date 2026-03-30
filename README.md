@@ -83,8 +83,8 @@ Defaults are split into:
 | `save.extension` | string | empty | If set, forces/overrides file extension. |
 | `save.save_metadata` | bool | `false` | Writes metadata JSON beside downloaded file. |
 | `base_download_dir` | string | empty | Deprecated alias for `save.base_download_dir`. |
-| `stop_on_error` | bool | `false` | Abort remaining task processing on first task error. |
-| `stop_on_code` | int | `0` (disabled) | Abort retries/download flow on matching HTTP status. |
+| `stop_all_tasks.on_runtime_error` | bool | `false` | Stop all remaining tasks when a runtime error remains after retries. |
+| `stop_all_tasks.on_http_code` | []int | empty | Stop all remaining tasks when final HTTP failure code matches one in the list. |
 | `timeout` | int (seconds) | `0` | `0` means runtime default HTTP timeout of `30s`. |
 | `download_limit` | int | `0` (unlimited) | Limits number of downloads attempted for task. |
 | `selector_matches_limit` | int | `0` (unlimited) | Limits number of selector matches converted into candidates. |
@@ -104,11 +104,11 @@ If retry is enabled and values are not explicitly set:
 
 | Option | Default |
 |---|---|
-| `retry.on_error` | `true` |
+| `retry.on_runtime_error` | `true` |
 | `retry.retries` | `3` |
 | `retry.delay` | `1` |
 | `retry.exponential_backoff` | `true` |
-| `retry.on_code` | empty |
+| `retry.on_http_code` | empty (runtime defaults to 4xx and 5xx) |
 
 ## Notes on future default changes
 

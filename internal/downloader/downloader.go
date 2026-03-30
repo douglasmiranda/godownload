@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,6 +27,7 @@ type TaskResult struct {
 	Saved    []storage.SaveResult
 	Errors   []error
 	Warnings []string
+	AbortAll bool
 }
 
 type Service struct {
@@ -94,8 +96,9 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 			defer mu.Unlock()
 			if dlErr != nil {
 				result.Errors = append(result.Errors, dlErr)
-				if task.StopOnError {
+				if shouldStopAllTasks(task, dlErr) {
 					stop.Store(true)
+					result.AbortAll = true
 				}
 				return
 			}
@@ -132,7 +135,7 @@ func (s *Service) resolveDownloadCandidates(ctx context.Context, seedURLs []stri
 
 			body, _, err := s.fetchURL(ctx, task, pageURL)
 			if err != nil {
-				if task.StopOnError {
+				if shouldStopAllTasks(task, err) {
 					return nil, "", fmt.Errorf("fetch selector page %s: %w", pageURL, err)
 				}
 				continue
@@ -146,7 +149,7 @@ func (s *Service) resolveDownloadCandidates(ctx context.Context, seedURLs []stri
 				SelectorMatchesLimit: task.SelectorMatchesLimit,
 			})
 			if err != nil {
-				if task.StopOnError {
+				if shouldStopAllTasks(task, err) {
 					return nil, "", fmt.Errorf("extract links from %s: %w", pageURL, err)
 				}
 				continue
@@ -209,9 +212,6 @@ func (s *Service) fetchURL(ctx context.Context, task *config.DownloadTask, rawUR
 		}
 		lastErr = err
 
-		if task.StopOnCode != 0 && code == task.StopOnCode {
-			return nil, "", fmt.Errorf("stop_on_code matched %d for %s", code, rawURL)
-		}
 		if !task.Retry.Enabled || !shouldRetry(task.Retry.Config, err, code) || attempt == attempts {
 			break
 		}
@@ -223,6 +223,10 @@ func (s *Service) fetchURL(ctx context.Context, task *config.DownloadTask, rawUR
 			return nil, "", ctx.Err()
 		case <-t.C:
 		}
+	}
+
+	if shouldStopOnHTTPCode(task, codeFromError(lastErr)) {
+		return nil, "", fmt.Errorf("stop_all_tasks.on_http_code matched %d for %s: %w", codeFromError(lastErr), rawURL, lastErr)
 	}
 
 	return nil, "", lastErr
@@ -245,7 +249,7 @@ func (s *Service) doOnce(ctx context.Context, client *http.Client, task *config.
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		io.Copy(io.Discard, resp.Body)
-		return nil, "", resp.StatusCode, fmt.Errorf("HTTPError: request failed with status %d", resp.StatusCode)
+		return nil, "", resp.StatusCode, httpStatusError{Code: resp.StatusCode, Err: fmt.Errorf("HTTPError: request failed with status %d", resp.StatusCode)}
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -315,21 +319,70 @@ func applyAuth(req *http.Request, auth *config.AuthConfig) error {
 
 func shouldRetry(cfg config.RetryConfig, err error, statusCode int) bool {
 	if err != nil {
-		if cfg.OnError {
+		if cfg.OnRuntimeError {
 			return true
 		}
 	}
 	if statusCode != 0 {
-		if len(cfg.OnCode) == 0 {
+		if len(cfg.OnHTTPCode) == 0 {
 			return statusCode >= 400
 		}
-		for _, c := range cfg.OnCode {
+		for _, c := range cfg.OnHTTPCode {
 			if c == statusCode {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func shouldStopAllTasks(task *config.DownloadTask, err error) bool {
+	if task == nil {
+		return false
+	}
+	if task.StopAllTasks.OnRuntimeError {
+		return true
+	}
+	return shouldStopOnHTTPCode(task, codeFromError(err))
+}
+
+func shouldStopOnHTTPCode(task *config.DownloadTask, statusCode int) bool {
+	if task == nil || statusCode == 0 {
+		return false
+	}
+	for _, c := range task.StopAllTasks.OnHTTPCode {
+		if c == statusCode {
+			return true
+		}
+	}
+	return false
+}
+
+func codeFromError(err error) int {
+	if err == nil {
+		return 0
+	}
+	var hsErr httpStatusError
+	if !errors.As(err, &hsErr) {
+		return 0
+	}
+	return hsErr.Code
+}
+
+type httpStatusError struct {
+	Code int
+	Err  error
+}
+
+func (e httpStatusError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("HTTPError: request failed with status %d", e.Code)
+}
+
+func (e httpStatusError) Unwrap() error {
+	return e.Err
 }
 
 func backoffDelay(cfg config.RetryConfig, attempt int) time.Duration {

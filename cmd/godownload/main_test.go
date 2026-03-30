@@ -151,6 +151,38 @@ downloads:
 	}
 }
 
+func TestRun_ConfigValidationErrorShowsDiagnosticDetails(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "download.yaml")
+	yml := `
+downloads:
+  bad:
+    url: https://httpbin.org/stream/{{.N}}
+    url_gen_range:
+      var_name: X
+      range_start: 1
+      range_end: 1
+      step: 1
+`
+	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	var errOut strings.Builder
+	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, "bad.url_gen_range.var_name") {
+		t.Fatalf("expected detailed diagnostic field in stderr, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "{{.X}}") {
+		t.Fatalf("expected helpful template hint in stderr, got %q", stderr)
+	}
+}
+
 func TestRun_WritesReportFile_NoTasks(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "download.yaml")

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLoadBytes_ValidMinimalConfig(t *testing.T) {
 	data := []byte(`
@@ -40,6 +43,30 @@ downloads:
 	_, _, err := LoadBytes(data)
 	if err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestLoadBytes_URLGenVarNameMustMatchURLTemplate(t *testing.T) {
+	data := []byte(`
+downloads:
+  bad:
+    url: https://httpbin.org/stream/{{.N}}
+    url_gen_range:
+      var_name: X
+      range_start: 1
+      range_end: 1
+      step: 1
+`)
+
+	_, diags, err := LoadBytes(data)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !hasError(diags, "bad", "url_gen_range.var_name") {
+		t.Fatalf("expected url_gen_range.var_name validation error, got %#v", diags)
+	}
+	if !errorContains(diags, "bad", "url_gen_range.var_name", "{{.X}}") {
+		t.Fatalf("expected clear template mismatch message, got %#v", diags)
 	}
 }
 
@@ -216,22 +243,22 @@ downloads:
 	}
 }
 
-func TestLoadBytes_TaskStopOnCodeZeroOverridesGlobal(t *testing.T) {
-	data := []byte(`
-config:
-  stop_on_code: 404
-downloads:
-  one:
-    url: https://example.com/file.zip
-    stop_on_code: 0
-`)
+func TestLoadBytes_TaskStopAllTasksOnHTTPCodeEmptyOverridesGlobal(t *testing.T) {
+	data := []byte("config:\n" +
+		"  stop_all_tasks:\n" +
+		"    on_http_code: [404]\n" +
+		"downloads:\n" +
+		"  one:\n" +
+		"    url: https://example.com/file.zip\n" +
+		"    stop_all_tasks:\n" +
+		"      on_http_code: []\n")
 
 	cfg, _, err := LoadBytes(data)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if cfg.Downloads["one"].StopOnCode != 0 {
-		t.Fatalf("expected stop_on_code=0 override, got %d", cfg.Downloads["one"].StopOnCode)
+	if len(cfg.Downloads["one"].StopAllTasks.OnHTTPCode) != 0 {
+		t.Fatalf("expected stop_all_tasks.on_http_code override to empty, got %#v", cfg.Downloads["one"].StopAllTasks.OnHTTPCode)
 	}
 }
 
@@ -275,22 +302,22 @@ downloads:
 	}
 }
 
-func TestLoadBytes_TaskStopOnErrorFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte(`
-config:
-  stop_on_error: true
-downloads:
-  one:
-    url: https://example.com/file.zip
-    stop_on_error: false
-`)
+func TestLoadBytes_TaskStopAllTasksOnRuntimeErrorFalseOverridesGlobalTrue(t *testing.T) {
+	data := []byte("config:\n" +
+		"  stop_all_tasks:\n" +
+		"    on_runtime_error: true\n" +
+		"downloads:\n" +
+		"  one:\n" +
+		"    url: https://example.com/file.zip\n" +
+		"    stop_all_tasks:\n" +
+		"      on_runtime_error: false\n")
 
 	cfg, _, err := LoadBytes(data)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if cfg.Downloads["one"].StopOnError {
-		t.Fatal("expected task stop_on_error=false to override global true")
+	if cfg.Downloads["one"].StopAllTasks.OnRuntimeError {
+		t.Fatal("expected task stop_all_tasks.on_runtime_error=false to override global true")
 	}
 }
 
@@ -356,4 +383,89 @@ downloads:
 	if cfg.Downloads["one"].Save.SaveMetadata {
 		t.Fatal("expected task save.save_metadata=false to override global true")
 	}
+}
+
+func TestLoadBytes_NoWarningWhenFilenameTemplateOnlyFromDefault(t *testing.T) {
+	data := []byte(`
+downloads:
+  one:
+    url: https://example.com/file.zip
+    save:
+      filename: renamed.zip
+`)
+
+	_, diags, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if hasWarning(diags, "one", "save.filename_template") {
+		t.Fatal("did not expect warning when filename_template was not explicitly set in YAML")
+	}
+}
+
+func TestLoadBytes_WarningWhenGlobalFilenameTemplateExplicitlySet(t *testing.T) {
+	data := []byte(`
+config:
+  save:
+    filename_template: "{{.ORIGINAL_FILENAME}}"
+downloads:
+  one:
+    url: https://example.com/file.zip
+    save:
+      filename: renamed.zip
+`)
+
+	_, diags, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !hasWarning(diags, "one", "save.filename_template") {
+		t.Fatal("expected warning when global save.filename_template is explicitly set")
+	}
+}
+
+func TestLoadBytes_WarningWhenTaskFilenameTemplateExplicitlySet(t *testing.T) {
+	data := []byte(`
+downloads:
+  one:
+    url: https://example.com/file.zip
+    save:
+      filename: renamed.zip
+      filename_template: "{{.ORIGINAL_FILENAME}}"
+`)
+
+	_, diags, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !hasWarning(diags, "one", "save.filename_template") {
+		t.Fatal("expected warning when task save.filename_template is explicitly set")
+	}
+}
+
+func hasWarning(diags []Diagnostic, taskName string, field string) bool {
+	for _, d := range diags {
+		if d.Severity == SeverityWarning && d.TaskName == taskName && d.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+func hasError(diags []Diagnostic, taskName string, field string) bool {
+	for _, d := range diags {
+		if d.Severity == SeverityError && d.TaskName == taskName && d.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+func errorContains(diags []Diagnostic, taskName string, field string, substr string) bool {
+	for _, d := range diags {
+		if d.Severity == SeverityError && d.TaskName == taskName && d.Field == field {
+			return strings.Contains(d.Message, substr)
+		}
+	}
+	return false
 }

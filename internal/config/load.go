@@ -14,9 +14,9 @@ func LoadFile(path string) (*Config, []Diagnostic, error) {
 		return nil, nil, fmt.Errorf("read config file: %w", err)
 	}
 
-	cfg, _, err := LoadBytes(b)
+	cfg, preDiags, err := LoadBytes(b)
 	if err != nil {
-		return cfg, nil, err
+		return cfg, preDiags, err
 	}
 
 	configDir := filepath.Dir(path)

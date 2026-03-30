@@ -31,8 +31,7 @@ type WorkerConfig struct {
 	URLGenDates          *URLGenDates      `yaml:"url_gen_dates"`
 	ForceDownload        bool              `yaml:"force_download"`
 	BaseDownloadDir      string            `yaml:"base_download_dir"`
-	StopOnError          bool              `yaml:"stop_on_error"`
-	StopOnCode           int               `yaml:"stop_on_code"`
+	StopAllTasks         StopAllTasks      `yaml:"stop_all_tasks"`
 	Timeout              int               `yaml:"timeout"`
 	DownloadLimit        int               `yaml:"download_limit"`
 	SelectorMatchesLimit int               `yaml:"selector_matches_limit"`
@@ -41,6 +40,25 @@ type WorkerConfig struct {
 	Auth                 *AuthConfig       `yaml:"auth"`
 	Security             SecurityConfig    `yaml:"security"`
 	MaxDepth             int               `yaml:"max_depth"`
+	setFields            map[string]bool   `yaml:"-"`
+}
+
+func (w *WorkerConfig) UnmarshalYAML(value *yaml.Node) error {
+	type workerAlias WorkerConfig
+	var aux workerAlias
+	if err := value.Decode(&aux); err != nil {
+		return err
+	}
+	*w = WorkerConfig(aux)
+	w.setFields = collectYAMLFieldPaths(value)
+	return nil
+}
+
+func (w *WorkerConfig) hasField(path string) bool {
+	if w == nil || w.setFields == nil {
+		return false
+	}
+	return w.setFields[path]
 }
 
 type DownloadTask struct {
@@ -56,8 +74,7 @@ type DownloadTask struct {
 	ForceDownload        bool              `yaml:"force_download"`
 	Save                 SaveConfig        `yaml:"save"`
 	BaseDownloadDir      string            `yaml:"base_download_dir"`
-	StopOnError          bool              `yaml:"stop_on_error"`
-	StopOnCode           int               `yaml:"stop_on_code"`
+	StopAllTasks         StopAllTasks      `yaml:"stop_all_tasks"`
 	Timeout              int               `yaml:"timeout"`
 	DownloadLimit        int               `yaml:"download_limit"`
 	SelectorMatchesLimit int               `yaml:"selector_matches_limit"`
@@ -153,11 +170,16 @@ type Retry struct {
 }
 
 type RetryConfig struct {
-	OnError            bool  `yaml:"on_error"`
-	OnCode             []int `yaml:"on_code"`
+	OnRuntimeError     bool  `yaml:"on_runtime_error"`
+	OnHTTPCode         []int `yaml:"on_http_code"`
 	Retries            int   `yaml:"retries"`
 	Delay              int   `yaml:"delay"`
 	ExponentialBackoff *bool `yaml:"exponential_backoff"`
+}
+
+type StopAllTasks struct {
+	OnRuntimeError bool  `yaml:"on_runtime_error"`
+	OnHTTPCode     []int `yaml:"on_http_code"`
 }
 
 func (r *Retry) UnmarshalYAML(value *yaml.Node) error {

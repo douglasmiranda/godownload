@@ -2,6 +2,7 @@ package urlgen
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/douglasmiranda/godownload/internal/config"
@@ -9,7 +10,7 @@ import (
 
 func TestGenerateRange(t *testing.T) {
 	task := &config.DownloadTask{
-		URL: "https://example.com/file_{{.N}}.zip",
+		URL:         "https://example.com/file_{{.N}}.zip",
 		URLGenRange: &config.URLGenRange{VarName: "N", RangeStart: 1, RangeEnd: 3, Step: 1},
 	}
 	got, err := Generate(task, nil)
@@ -28,7 +29,7 @@ func TestGenerateRange(t *testing.T) {
 
 func TestGenerateList(t *testing.T) {
 	task := &config.DownloadTask{
-		URL: "https://example.com/file_{{.NAME}}.zip",
+		URL:        "https://example.com/file_{{.NAME}}.zip",
 		URLGenList: &config.URLGenList{VarName: "NAME", Values: []string{"a", "b"}},
 	}
 	got, err := Generate(task, nil)
@@ -64,7 +65,7 @@ func TestGenerateDates(t *testing.T) {
 
 func TestGenerateFile(t *testing.T) {
 	task := &config.DownloadTask{
-		URL: "https://example.com/{{.URL}}",
+		URL:        "https://example.com/{{.URL}}",
 		URLGenFile: &config.URLGenFile{VarName: "URL", File: "ignored"},
 	}
 	loader := func(path string) ([]string, error) {
@@ -77,5 +78,20 @@ func TestGenerateFile(t *testing.T) {
 	want := []string{"https://example.com/a", "https://example.com/b"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected URLs: %#v", got)
+	}
+}
+
+func TestGenerateRange_VarNameMissingInTemplate(t *testing.T) {
+	task := &config.DownloadTask{
+		URL:         "https://example.com/file_{{.N}}.zip",
+		URLGenRange: &config.URLGenRange{VarName: "X", RangeStart: 1, RangeEnd: 1, Step: 1},
+	}
+
+	_, err := Generate(task, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "must reference var_name") {
+		t.Fatalf("expected mismatch error, got %v", err)
 	}
 }

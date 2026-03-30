@@ -5,7 +5,7 @@ import "strings"
 func defaultRetryConfig() RetryConfig {
 	backoff := true
 	return RetryConfig{
-		OnError:            true,
+		OnRuntimeError:     true,
 		Retries:            3,
 		Delay:              1,
 		ExponentialBackoff: &backoff,
@@ -83,11 +83,11 @@ func applyDefaults(cfg *Config) {
 		if strings.TrimSpace(task.BaseDownloadDir) == "" {
 			task.BaseDownloadDir = cfg.Config.BaseDownloadDir
 		}
-		if !task.hasField("stop_on_error") {
-			task.StopOnError = cfg.Config.StopOnError
+		if !task.hasField("stop_all_tasks.on_runtime_error") {
+			task.StopAllTasks.OnRuntimeError = cfg.Config.StopAllTasks.OnRuntimeError
 		}
-		if !task.hasField("stop_on_code") {
-			task.StopOnCode = cfg.Config.StopOnCode
+		if !task.hasField("stop_all_tasks.on_http_code") && len(task.StopAllTasks.OnHTTPCode) == 0 && len(cfg.Config.StopAllTasks.OnHTTPCode) > 0 {
+			task.StopAllTasks.OnHTTPCode = append([]int{}, cfg.Config.StopAllTasks.OnHTTPCode...)
 		}
 		if !task.hasField("timeout") {
 			task.Timeout = cfg.Config.Timeout
@@ -197,7 +197,7 @@ func cloneURLGenDates(in *URLGenDates) *URLGenDates {
 
 func cloneRetry(in Retry) Retry {
 	out := in
-	out.Config.OnCode = append([]int{}, in.Config.OnCode...)
+	out.Config.OnHTTPCode = append([]int{}, in.Config.OnHTTPCode...)
 	if in.Config.ExponentialBackoff != nil {
 		v := *in.Config.ExponentialBackoff
 		out.Config.ExponentialBackoff = &v
@@ -240,11 +240,11 @@ func mergeRetryDefaults(task *DownloadTask, defaults Retry) Retry {
 		return out
 	}
 
-	if !task.hasField("retry.on_error") {
-		out.Config.OnError = defaults.Config.OnError
+	if !task.hasField("retry.on_runtime_error") {
+		out.Config.OnRuntimeError = defaults.Config.OnRuntimeError
 	}
-	if !task.hasField("retry.on_code") && len(out.Config.OnCode) == 0 && len(defaults.Config.OnCode) > 0 {
-		out.Config.OnCode = append([]int{}, defaults.Config.OnCode...)
+	if !task.hasField("retry.on_http_code") && len(out.Config.OnHTTPCode) == 0 && len(defaults.Config.OnHTTPCode) > 0 {
+		out.Config.OnHTTPCode = append([]int{}, defaults.Config.OnHTTPCode...)
 	}
 	if !task.hasField("retry.retries") {
 		out.Config.Retries = defaults.Config.Retries
