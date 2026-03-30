@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,5 +255,44 @@ downloads:
 	}
 	if rr.ReportVersion != reportSchemaVersion {
 		t.Fatalf("expected report_version=%q, got %q", reportSchemaVersion, rr.ReportVersion)
+	}
+}
+
+func TestRun_TreatWarningsAsErrors_MakesRunFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><p>no links</p></body></html>"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "download.yaml")
+	yml := `
+downloads:
+  warn_only:
+    url: ` + server.URL + `/
+    selector: "a"
+    security:
+      allow_insecure_http: true
+    treat_warnings_as_errors: true
+`
+	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	var errOut strings.Builder
+	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	if !strings.Contains(errOut.String(), "[error] warn_only") {
+		t.Fatalf("expected promoted warning to be reported as error, got %q", errOut.String())
+	}
+	if !strings.Contains(out.String(), "warnings=0") {
+		t.Fatalf("expected warnings to be promoted and removed from warning count, got %q", out.String())
+	}
+	if !strings.Contains(out.String(), "errors=") {
+		t.Fatalf("expected errors count in summary, got %q", out.String())
 	}
 }

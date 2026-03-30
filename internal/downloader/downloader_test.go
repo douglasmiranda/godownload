@@ -213,3 +213,89 @@ func TestRunTask_StopAllTasksOnHTTPCodeAfterRetries(t *testing.T) {
 		t.Fatalf("expected 3 attempts (retries respected before stop), got %d", attempt)
 	}
 }
+
+func TestRunTask_TreatWarningsAsErrors_PromotesWarnings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><p>no links here</p></body></html>"))
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:                   server.URL + "/",
+		Selector:              "a",
+		TreatWarningsAsErrors: true,
+		Security:              config.SecurityConfig{AllowInsecureHTTP: true},
+	}
+
+	svc := &Service{}
+	res := svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
+
+	if len(res.Warnings) != 0 {
+		t.Fatalf("expected warnings to be promoted and cleared, got %v", res.Warnings)
+	}
+	if len(res.Errors) == 0 {
+		t.Fatal("expected promoted warning to appear as error")
+	}
+	if res.Errors[0] == nil || res.Errors[0].Error() == "" {
+		t.Fatal("expected promoted error message")
+	}
+}
+
+func TestRunTask_TreatWarningsAsErrors_TriggersStopAllTasksOnRuntimeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><p>no links here</p></body></html>"))
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:                   server.URL + "/",
+		Selector:              "a",
+		TreatWarningsAsErrors: true,
+		StopAllTasks:          config.StopAllTasks{OnRuntimeError: true},
+		Security:              config.SecurityConfig{AllowInsecureHTTP: true},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected promoted warning to be treated as error")
+	}
+	if !res.AbortAll {
+		t.Fatal("expected AbortAll to be true when stop_all_tasks.on_runtime_error is enabled")
+	}
+}
+
+func TestRunTask_TreatWarningsAsErrors_RetriesThenStopsAllTasksOnRuntimeError(t *testing.T) {
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><p>no links here</p></body></html>"))
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:      server.URL + "/",
+		Selector: "a",
+		Retry: config.Retry{Enabled: true, Config: config.RetryConfig{
+			OnRuntimeError: true,
+			Retries:        2,
+			Delay:          1,
+		}},
+		TreatWarningsAsErrors: true,
+		StopAllTasks:          config.StopAllTasks{OnRuntimeError: true},
+		Security:              config.SecurityConfig{AllowInsecureHTTP: true},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected promoted warning to be treated as error")
+	}
+	if !res.AbortAll {
+		t.Fatal("expected AbortAll to be true after retries are exhausted")
+	}
+	if attempt != 3 {
+		t.Fatalf("expected 3 task attempts (initial + 2 retries), got %d", attempt)
+	}
+}

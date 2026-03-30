@@ -185,6 +185,14 @@ downloads:
     url: https://example.com/file.zip
     force_download: true
 
+  # treat warnings as errors for this task
+  # useful when warning conditions (e.g. zero matches, skipped downloads) must fail CI.
+  # default is false.
+  example_treat_warnings_as_errors:
+    url: https://example.com/
+    selector: "a"
+    treat_warnings_as_errors: true
+
   # save the downloaded file in a specific directory (relative or absolute path)
   example_custom_directory:
     url: https://example.com/file.zip

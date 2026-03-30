@@ -36,11 +36,56 @@ type Service struct {
 }
 
 func (s *Service) RunTask(ctx context.Context, taskName string, task *config.DownloadTask, workerCfg config.WorkerConfig) TaskResult {
-	result := TaskResult{TaskName: taskName}
 	if task == nil {
+		result := TaskResult{TaskName: taskName}
 		result.Errors = append(result.Errors, fmt.Errorf("task is nil"))
 		return result
 	}
+
+	attempts := 1
+	if task.TreatWarningsAsErrors && task.Retry.Enabled && task.Retry.Config.OnRuntimeError {
+		attempts = task.Retry.Config.Retries + 1
+		if attempts <= 0 {
+			attempts = 1
+		}
+	}
+
+	var last TaskResult
+	for attempt := 1; attempt <= attempts; attempt++ {
+		result := s.runTaskOnce(ctx, taskName, task, workerCfg)
+		last = result
+
+		if len(result.Errors) == 0 {
+			return result
+		}
+
+		if shouldRetryPromotedWarnings(task, result, attempt, attempts) {
+			delay := backoffDelay(task.Retry.Config, attempt)
+			t := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				result.Errors = append(result.Errors, ctx.Err())
+				return result
+			case <-t.C:
+			}
+			continue
+		}
+
+		if hasOnlyPromotedWarningErrors(result.Errors) && shouldStopAllTasks(task, result.Errors[0]) {
+			result.AbortAll = true
+		}
+		return result
+	}
+
+	if hasOnlyPromotedWarningErrors(last.Errors) && shouldStopAllTasks(task, last.Errors[0]) {
+		last.AbortAll = true
+	}
+	return last
+}
+
+func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config.DownloadTask, workerCfg config.WorkerConfig) TaskResult {
+	result := TaskResult{TaskName: taskName}
 
 	loader := s.FileLoader
 	if loader == nil {
@@ -49,11 +94,11 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 	seedURLs, err := urlgen.Generate(task, urlgen.FileLoader(loader))
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("generate urls: %w", err))
-		return result
+		return finalizeTaskResult(task, result)
 	}
 	if len(seedURLs) == 0 {
 		result.Warnings = append(result.Warnings, "no URLs generated; task skipped")
-		return result
+		return finalizeTaskResult(task, result)
 	}
 
 	candidateURLs, warn, err := s.resolveDownloadCandidates(ctx, seedURLs, task, workerCfg.DefaultAttrMapping)
@@ -62,11 +107,11 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 	}
 	if err != nil {
 		result.Errors = append(result.Errors, err)
-		return result
+		return finalizeTaskResult(task, result)
 	}
 	if len(candidateURLs) == 0 {
 		result.Warnings = append(result.Warnings, "no candidate URLs found; task skipped")
-		return result
+		return finalizeTaskResult(task, result)
 	}
 	if task.DownloadLimit > 0 && len(candidateURLs) > task.DownloadLimit {
 		candidateURLs = candidateURLs[:task.DownloadLimit]
@@ -110,7 +155,51 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 	}
 	wg.Wait()
 
+	return finalizeTaskResult(task, result)
+}
+
+func finalizeTaskResult(task *config.DownloadTask, result TaskResult) TaskResult {
+	if task == nil || !task.TreatWarningsAsErrors || len(result.Warnings) == 0 {
+		return result
+	}
+
+	for _, w := range result.Warnings {
+		result.Errors = append(result.Errors, warningAsError{msg: w})
+	}
+	result.Warnings = nil
+
 	return result
+}
+
+func shouldRetryPromotedWarnings(task *config.DownloadTask, result TaskResult, attempt int, attempts int) bool {
+	if task == nil || !task.TreatWarningsAsErrors || !task.Retry.Enabled || !task.Retry.Config.OnRuntimeError {
+		return false
+	}
+	if attempt >= attempts {
+		return false
+	}
+	return hasOnlyPromotedWarningErrors(result.Errors)
+}
+
+func hasOnlyPromotedWarningErrors(errs []error) bool {
+	if len(errs) == 0 {
+		return false
+	}
+	for _, err := range errs {
+		var promoted warningAsError
+		if !errors.As(err, &promoted) {
+			return false
+		}
+	}
+	return true
+}
+
+type warningAsError struct {
+	msg string
+}
+
+func (w warningAsError) Error() string {
+	return fmt.Sprintf("warning treated as error: %s", w.msg)
 }
 
 func (s *Service) resolveDownloadCandidates(ctx context.Context, seedURLs []string, task *config.DownloadTask, defaultAttrMapping map[string]string) ([]string, string, error) {

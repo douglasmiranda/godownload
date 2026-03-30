@@ -76,6 +76,7 @@ Defaults are split into:
 | `url_gen_file` | object | nil | Optional URL generation strategy. |
 | `url_gen_dates` | object | nil | Optional URL generation strategy. |
 | `force_download` | bool | `false` | If `true`, do not skip when destination exists. |
+| `treat_warnings_as_errors` | bool | `false` | If `true`, runtime task warnings are promoted to errors. This can make the run fail and can trigger `stop_all_tasks.on_runtime_error`. |
 | `save.base_download_dir` | string | `.` (effective) | If unset, save uses current directory at runtime. |
 | `save.filename_template` | string | `{{.ORIGINAL_FILENAME}}` | Ignored when `save.filename` is set. Final filename keeps extension at the end: `save.extension` if set, otherwise original filename extension. |
 | `save.filename` | string | empty | Single-file tasks only. |

@@ -80,6 +80,9 @@ func applyDefaults(cfg *Config) {
 		if !task.hasField("force_download") {
 			task.ForceDownload = cfg.Config.ForceDownload
 		}
+		if !task.hasField("treat_warnings_as_errors") {
+			task.TreatWarningsAsErrors = cfg.Config.TreatWarningsAsErrors
+		}
 		if strings.TrimSpace(task.BaseDownloadDir) == "" {
 			task.BaseDownloadDir = cfg.Config.BaseDownloadDir
 		}

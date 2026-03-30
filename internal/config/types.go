@@ -17,30 +17,31 @@ type Config struct {
 }
 
 type WorkerConfig struct {
-	Concurrency          int               `yaml:"concurrency"`
-	LogLevel             string            `yaml:"log_level"`
-	Save                 SaveConfig        `yaml:"save"`
-	DefaultAttrMapping   map[string]string `yaml:"default_attr_mappings"`
-	Selector             string            `yaml:"selector"`
-	Attr                 string            `yaml:"attr"`
-	RegexFilter          string            `yaml:"regex_filter"`
-	AttrValRegexFilter   string            `yaml:"attr_val_regex_filter"`
-	URLGenRange          *URLGenRange      `yaml:"url_gen_range"`
-	URLGenList           *URLGenList       `yaml:"url_gen_list"`
-	URLGenFile           *URLGenFile       `yaml:"url_gen_file"`
-	URLGenDates          *URLGenDates      `yaml:"url_gen_dates"`
-	ForceDownload        bool              `yaml:"force_download"`
-	BaseDownloadDir      string            `yaml:"base_download_dir"`
-	StopAllTasks         StopAllTasks      `yaml:"stop_all_tasks"`
-	Timeout              int               `yaml:"timeout"`
-	DownloadLimit        int               `yaml:"download_limit"`
-	SelectorMatchesLimit int               `yaml:"selector_matches_limit"`
-	Retry                Retry             `yaml:"retry"`
-	Env                  map[string]string `yaml:"env"`
-	Auth                 *AuthConfig       `yaml:"auth"`
-	Security             SecurityConfig    `yaml:"security"`
-	MaxDepth             int               `yaml:"max_depth"`
-	setFields            map[string]bool   `yaml:"-"`
+	Concurrency           int               `yaml:"concurrency"`
+	LogLevel              string            `yaml:"log_level"`
+	Save                  SaveConfig        `yaml:"save"`
+	DefaultAttrMapping    map[string]string `yaml:"default_attr_mappings"`
+	Selector              string            `yaml:"selector"`
+	Attr                  string            `yaml:"attr"`
+	RegexFilter           string            `yaml:"regex_filter"`
+	AttrValRegexFilter    string            `yaml:"attr_val_regex_filter"`
+	URLGenRange           *URLGenRange      `yaml:"url_gen_range"`
+	URLGenList            *URLGenList       `yaml:"url_gen_list"`
+	URLGenFile            *URLGenFile       `yaml:"url_gen_file"`
+	URLGenDates           *URLGenDates      `yaml:"url_gen_dates"`
+	ForceDownload         bool              `yaml:"force_download"`
+	TreatWarningsAsErrors bool              `yaml:"treat_warnings_as_errors"`
+	BaseDownloadDir       string            `yaml:"base_download_dir"`
+	StopAllTasks          StopAllTasks      `yaml:"stop_all_tasks"`
+	Timeout               int               `yaml:"timeout"`
+	DownloadLimit         int               `yaml:"download_limit"`
+	SelectorMatchesLimit  int               `yaml:"selector_matches_limit"`
+	Retry                 Retry             `yaml:"retry"`
+	Env                   map[string]string `yaml:"env"`
+	Auth                  *AuthConfig       `yaml:"auth"`
+	Security              SecurityConfig    `yaml:"security"`
+	MaxDepth              int               `yaml:"max_depth"`
+	setFields             map[string]bool   `yaml:"-"`
 }
 
 func (w *WorkerConfig) UnmarshalYAML(value *yaml.Node) error {
@@ -62,28 +63,29 @@ func (w *WorkerConfig) hasField(path string) bool {
 }
 
 type DownloadTask struct {
-	URL                  string            `yaml:"url"`
-	Selector             string            `yaml:"selector"`
-	Attr                 string            `yaml:"attr"`
-	RegexFilter          string            `yaml:"regex_filter"`
-	AttrValRegexFilter   string            `yaml:"attr_val_regex_filter"`
-	URLGenRange          *URLGenRange      `yaml:"url_gen_range"`
-	URLGenList           *URLGenList       `yaml:"url_gen_list"`
-	URLGenFile           *URLGenFile       `yaml:"url_gen_file"`
-	URLGenDates          *URLGenDates      `yaml:"url_gen_dates"`
-	ForceDownload        bool              `yaml:"force_download"`
-	Save                 SaveConfig        `yaml:"save"`
-	BaseDownloadDir      string            `yaml:"base_download_dir"`
-	StopAllTasks         StopAllTasks      `yaml:"stop_all_tasks"`
-	Timeout              int               `yaml:"timeout"`
-	DownloadLimit        int               `yaml:"download_limit"`
-	SelectorMatchesLimit int               `yaml:"selector_matches_limit"`
-	Retry                Retry             `yaml:"retry"`
-	Env                  map[string]string `yaml:"env"`
-	Auth                 *AuthConfig       `yaml:"auth"`
-	Security             SecurityConfig    `yaml:"security"`
-	MaxDepth             int               `yaml:"max_depth"`
-	setFields            map[string]bool   `yaml:"-"`
+	URL                   string            `yaml:"url"`
+	Selector              string            `yaml:"selector"`
+	Attr                  string            `yaml:"attr"`
+	RegexFilter           string            `yaml:"regex_filter"`
+	AttrValRegexFilter    string            `yaml:"attr_val_regex_filter"`
+	URLGenRange           *URLGenRange      `yaml:"url_gen_range"`
+	URLGenList            *URLGenList       `yaml:"url_gen_list"`
+	URLGenFile            *URLGenFile       `yaml:"url_gen_file"`
+	URLGenDates           *URLGenDates      `yaml:"url_gen_dates"`
+	ForceDownload         bool              `yaml:"force_download"`
+	TreatWarningsAsErrors bool              `yaml:"treat_warnings_as_errors"`
+	Save                  SaveConfig        `yaml:"save"`
+	BaseDownloadDir       string            `yaml:"base_download_dir"`
+	StopAllTasks          StopAllTasks      `yaml:"stop_all_tasks"`
+	Timeout               int               `yaml:"timeout"`
+	DownloadLimit         int               `yaml:"download_limit"`
+	SelectorMatchesLimit  int               `yaml:"selector_matches_limit"`
+	Retry                 Retry             `yaml:"retry"`
+	Env                   map[string]string `yaml:"env"`
+	Auth                  *AuthConfig       `yaml:"auth"`
+	Security              SecurityConfig    `yaml:"security"`
+	MaxDepth              int               `yaml:"max_depth"`
+	setFields             map[string]bool   `yaml:"-"`
 }
 
 func (t *DownloadTask) UnmarshalYAML(value *yaml.Node) error {

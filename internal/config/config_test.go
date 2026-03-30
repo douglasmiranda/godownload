@@ -222,6 +222,43 @@ downloads:
 	}
 }
 
+func TestLoadBytes_GlobalTreatWarningsAsErrorsInherited(t *testing.T) {
+	data := []byte(`
+config:
+  treat_warnings_as_errors: true
+downloads:
+  one:
+    url: https://example.com/file.zip
+`)
+
+	cfg, _, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !cfg.Downloads["one"].TreatWarningsAsErrors {
+		t.Fatal("expected task treat_warnings_as_errors to inherit true from config")
+	}
+}
+
+func TestLoadBytes_TaskTreatWarningsAsErrorsFalseOverridesGlobalTrue(t *testing.T) {
+	data := []byte(`
+config:
+  treat_warnings_as_errors: true
+downloads:
+  one:
+    url: https://example.com/file.zip
+    treat_warnings_as_errors: false
+`)
+
+	cfg, _, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cfg.Downloads["one"].TreatWarningsAsErrors {
+		t.Fatal("expected task treat_warnings_as_errors=false to override global true")
+	}
+}
+
 func TestLoadBytes_TaskSecurityFalseOverridesGlobalTrue(t *testing.T) {
 	data := []byte(`
 config:
