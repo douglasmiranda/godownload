@@ -275,14 +275,16 @@ downloads:
 }
 
 func TestLoadBytes_TaskStopAllTasksOnHTTPCodeEmptyOverridesGlobal(t *testing.T) {
-	data := []byte("config:\n" +
-		"  stop_all_tasks:\n" +
-		"    on_http_code: [404]\n" +
-		"downloads:\n" +
-		"  one:\n" +
-		"    url: https://example.com/file.zip\n" +
-		"    stop_all_tasks:\n" +
-		"      on_http_code: []\n")
+	data := []byte(`
+config:
+  stop_all_tasks:
+    on_http_code: [404]
+downloads:
+  one:
+    url: https://example.com/file.zip
+    stop_all_tasks:
+      on_http_code: []
+`)
 
 	cfg, _, err := LoadBytes(data)
 	if err != nil {
@@ -334,14 +336,16 @@ downloads:
 }
 
 func TestLoadBytes_TaskStopAllTasksOnRuntimeErrorFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte("config:\n" +
-		"  stop_all_tasks:\n" +
-		"    on_runtime_error: true\n" +
-		"downloads:\n" +
-		"  one:\n" +
-		"    url: https://example.com/file.zip\n" +
-		"    stop_all_tasks:\n" +
-		"      on_runtime_error: false\n")
+	data := []byte(`
+config:
+  stop_all_tasks:
+    on_runtime_error: true
+downloads:
+  one:
+    url: https://example.com/file.zip
+    stop_all_tasks:
+      on_runtime_error: false
+`)
 
 	cfg, _, err := LoadBytes(data)
 	if err != nil {
