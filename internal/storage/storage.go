@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/template"
 	"time"
@@ -101,7 +102,8 @@ func resolveFilename(task *config.DownloadTask, downloadURL string, originalName
 	}
 	vars := map[string]string{
 		"ORIGINAL_FILENAME": originalName,
-		"URL":               downloadURL,
+		"URL":               sanitizeFilenameValue(downloadURL),
+		"DOMAIN":            domainFromURL(downloadURL),
 		"TIMESTAMP":         time.Now().UTC().Format(time.RFC3339),
 		"DATE":              time.Now().UTC().Format("2006-01-02"),
 		"TIME":              time.Now().UTC().Format("15-04-05"),
@@ -120,11 +122,32 @@ func resolveFilename(task *config.DownloadTask, downloadURL string, originalName
 	if name == "" {
 		return "", fmt.Errorf("resolved filename is empty")
 	}
+	name = sanitizeFilenameValue(name)
+	if name == "" {
+		return "", fmt.Errorf("resolved filename is empty after sanitization")
+	}
 	targetExt := normalizeExtension(task.Save.Extension)
 	if targetExt == "" {
 		targetExt = normalizeExtension(path.Ext(originalName))
 	}
 	return ensureTrailingExtension(name, targetExt), nil
+}
+
+var invalidFilenameCharsPattern = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
+
+func sanitizeFilenameValue(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	v = invalidFilenameCharsPattern.ReplaceAllString(v, "_")
+	v = strings.ReplaceAll(v, "\n", "_")
+	v = strings.ReplaceAll(v, "\r", "_")
+	v = strings.Trim(v, " .")
+	for strings.Contains(v, "__") {
+		v = strings.ReplaceAll(v, "__", "_")
+	}
+	return v
 }
 
 func applyExtension(filename string, ext string) string {
@@ -162,6 +185,18 @@ func inferOriginalName(downloadURL string) string {
 		return u.Hostname() + "_downloaded_file"
 	}
 	return name
+}
+
+func domainFromURL(downloadURL string) string {
+	u, err := url.Parse(downloadURL)
+	if err != nil {
+		return "unknown-domain"
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return "unknown-domain"
+	}
+	return host
 }
 
 func nextAvailablePath(path string) (string, string) {

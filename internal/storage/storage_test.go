@@ -120,3 +120,50 @@ func TestSave_TemplateUsesConfiguredExtensionAtEnd(t *testing.T) {
 		t.Fatalf("expected saved filename to end with .pdf, got %q", res.SavedFileName)
 	}
 }
+
+func TestSave_TemplateURLIsSanitizedForFilename(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/index",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.URL}}",
+		},
+	}
+
+	res, err := Save("task1", task, "https://example.com/path/to/file.zip?foo=bar&x=1", []byte("data"), "application/zip")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(res.SavedFileName, "/") || strings.Contains(res.SavedFileName, "\\") {
+		t.Fatalf("expected sanitized filename without path separators, got %q", res.SavedFileName)
+	}
+	if strings.Contains(res.SavedFileName, ":") || strings.Contains(res.SavedFileName, "?") {
+		t.Fatalf("expected sanitized filename without reserved chars, got %q", res.SavedFileName)
+	}
+	if _, err := os.Stat(res.FilePath); err != nil {
+		t.Fatalf("expected saved file to exist: %v", err)
+	}
+}
+
+func TestSave_TemplateDomainVariable(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/index",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.DOMAIN}}_{{.ORIGINAL_FILENAME}}",
+		},
+	}
+
+	res, err := Save("task1", task, "https://sub.example.com/path/to/file.zip?x=1", []byte("data"), "application/zip")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(res.SavedFileName, "sub.example.com_") {
+		t.Fatalf("expected DOMAIN placeholder to resolve to hostname, got %q", res.SavedFileName)
+	}
+	if !strings.HasSuffix(res.SavedFileName, ".zip") {
+		t.Fatalf("expected saved filename to keep extension, got %q", res.SavedFileName)
+	}
+}

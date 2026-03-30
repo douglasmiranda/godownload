@@ -39,7 +39,8 @@ config:
     # the filename template for the downloaded files (optional, default is the original filename from the URL)
     # it can include placeholders for the original filename, the options are:
     # - {{.ORIGINAL_FILENAME}}: the original filename from the URL (e.g. file.zip)
-    # - {{.URL}}: the full URL of the file being downloaded (e.g. https://example.com/file.zip)
+    # - {{.URL}}: the full URL of the file being downloaded, sanitized for filesystem-safe filenames (e.g. https_example.com_file.zip)
+    # - {{.DOMAIN}}: the URL hostname/domain of the file being downloaded (e.g. example.com)
     # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
     # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
     # - {{.TIME}}: the time of the download (e.g. 12-00-00)
@@ -228,7 +229,8 @@ downloads:
       # the filename template for the downloaded file (optional, default is the original filename from the URL)
       # it can include placeholders for the original filename, the options are:
       # - {{.ORIGINAL_FILENAME}}: the original filename from the URL (e.g. file.zip)
-      # - {{.URL}}: the full URL of the file being downloaded (e.g. https://example.com/file.zip)
+      # - {{.URL}}: the full URL of the file being downloaded, sanitized for filesystem-safe filenames (e.g. https___example.com_file.zip)
+      # - {{.DOMAIN}}: the URL hostname/domain of the file being downloaded (e.g. example.com)
       # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
       # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
       # - {{.TIME}}: the time of the download (e.g. 12-00-00)
