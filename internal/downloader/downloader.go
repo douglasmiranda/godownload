@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/douglasmiranda/godownload/internal/config"
@@ -117,20 +118,28 @@ func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config
 		candidateURLs = candidateURLs[:task.DownloadLimit]
 	}
 
-	concurrency := workerCfg.Concurrency
+	concurrency := task.DownloadsPerTaskConcurrency
 	if concurrency <= 0 {
-		concurrency = config.DefaultConcurrency
+		concurrency = workerCfg.DownloadsPerTaskConcurrency
+	}
+	if concurrency <= 0 {
+		concurrency = config.DefaultDownloadsPerTaskConcurrency
 	}
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var stop atomicStop
+	var stop atomic.Bool
 
+downloadLoop:
 	for _, u := range candidateURLs {
 		if stop.Load() {
 			break
 		}
-		sem <- struct{}{}
+		select {
+		case <-ctx.Done():
+			break downloadLoop
+		case sem <- struct{}{}:
+		}
 		wg.Add(1)
 		go func(downloadURL string) {
 			defer wg.Done()
@@ -215,8 +224,14 @@ func (s *Service) resolveDownloadCandidates(ctx context.Context, seedURLs []stri
 	all := []string{}
 
 	for depth := 1; depth <= task.MaxDepth; depth++ {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
 		nextFrontier := []string{}
 		for _, pageURL := range frontier {
+			if err := ctx.Err(); err != nil {
+				return nil, "", err
+			}
 			if _, seen := visited[pageURL]; seen {
 				continue
 			}
@@ -504,23 +519,6 @@ func classifyNetworkError(err error) error {
 		return fmt.Errorf("ConnectionError: %w", err)
 	}
 	return err
-}
-
-type atomicStop struct {
-	mu sync.Mutex
-	v  bool
-}
-
-func (a *atomicStop) Store(v bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.v = v
-}
-
-func (a *atomicStop) Load() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.v
 }
 
 func dedupeStrings(in []string) []string {

@@ -17,8 +17,11 @@ func applyDefaults(cfg *Config) {
 		cfg.Env = map[string]string{}
 	}
 
-	if cfg.Config.Concurrency <= 0 {
-		cfg.Config.Concurrency = DefaultConcurrency
+	if !cfg.Config.hasField("task_concurrency") && cfg.Config.TaskConcurrency <= 0 {
+		cfg.Config.TaskConcurrency = DefaultTaskConcurrency
+	}
+	if !cfg.Config.hasField("downloads_per_task_concurrency") && cfg.Config.DownloadsPerTaskConcurrency <= 0 {
+		cfg.Config.DownloadsPerTaskConcurrency = DefaultDownloadsPerTaskConcurrency
 	}
 	if strings.TrimSpace(cfg.Config.LogLevel) == "" {
 		cfg.Config.LogLevel = DefaultLogLevel
@@ -100,6 +103,9 @@ func applyDefaults(cfg *Config) {
 		}
 		if !task.hasField("selector_matches_limit") {
 			task.SelectorMatchesLimit = cfg.Config.SelectorMatchesLimit
+		}
+		if !task.hasField("downloads_per_task_concurrency") {
+			task.DownloadsPerTaskConcurrency = cfg.Config.DownloadsPerTaskConcurrency
 		}
 		if !task.hasField("retry") {
 			task.Retry = cloneRetry(cfg.Config.Retry)

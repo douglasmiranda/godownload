@@ -37,7 +37,7 @@ Rules:
 - Every entry in `downloads` must define `url`.
 - In `config`, you can define all task options except `url`.
 - Values in a task override values from `config`, even when the task value is `false` or `0`.
-- `config` also contains worker-only fields: `concurrency`, `log_level`, and `default_attr_mappings`.
+- `config` also contains worker-only fields such as `task_concurrency`, `log_level`, and `default_attr_mappings`.
 
 Environment variable precedence:
 
@@ -57,7 +57,8 @@ Defaults are split into:
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
-| `config.concurrency` | int | `10` | Number of concurrent downloads. |
+| `config.task_concurrency` | int | `5` | Number of download tasks executed concurrently. |
+| `config.downloads_per_task_concurrency` | int | `3` | Number of concurrent downloads allowed inside each task. |
 | `config.log_level` | string | `INFO` | Logging verbosity. |
 | `config.default_attr_mappings` | map[string]string | `a:href`, `img:src`, `link:href`, `script:src`, `iframe:src` | Used when task `attr` is not set. |
 
@@ -88,6 +89,7 @@ Defaults are split into:
 | `stop_all_tasks.on_http_code` | []int | empty | Stop all remaining tasks when final HTTP failure code matches one in the list. |
 | `timeout` | int (seconds) | `0` | `0` means runtime default HTTP timeout of `30s`. |
 | `download_limit` | int | `0` (unlimited) | Limits number of downloads attempted for task. |
+| `downloads_per_task_concurrency` | int | inherits `config.downloads_per_task_concurrency` | Overrides concurrent download limit for this task only. |
 | `selector_matches_limit` | int | `0` (unlimited) | Limits number of selector matches converted into candidates. |
 | `retry` | bool or object | disabled | `true` enables retry defaults; object config enables custom retry policy. |
 | `env` | map[string]string | empty | Task-scoped env vars for template/env expansion. |

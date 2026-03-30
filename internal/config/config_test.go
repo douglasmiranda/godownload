@@ -6,13 +6,7 @@ import (
 )
 
 func TestLoadBytes_ValidMinimalConfig(t *testing.T) {
-	data := []byte(`
-config:
-  concurrency: 5
-downloads:
-  one:
-    url: https://example.com/file.zip
-`)
+	data := []byte("downloads:\n  one:\n    url: https://example.com/file.zip\n")
 
 	cfg, diags, err := LoadBytes(data)
 	if err != nil {

@@ -27,8 +27,12 @@ env:
 # (e.g. base directory for saving the files) as well as some worker-specific settings
 config:
   # WORKER SPECIFIC CONFIGS
-  concurrency: 5 # the number of concurrent downloads (optional, default is 10)
-  log_level: DEBUG # the log level for the worker (optional, default is INFO)
+  # how many download tasks run concurrently (optional, default is 5)
+  task_concurrency: 5
+  # how many downloads each task can run concurrently (optional, default is 3)
+  downloads_per_task_concurrency: 3
+  # the log level for the worker (optional, default is INFO)
+  log_level: INFO
 
   # DEFAULT CONFIGS FOR ALL DOWNLOADS (can be overridden by individual download configs)
   save:

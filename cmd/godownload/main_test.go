@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRun_NoTasks(t *testing.T) {
@@ -57,7 +58,7 @@ downloads:
 	}
 }
 
-func TestRun_SortsTasksDeterministically(t *testing.T) {
+func TestRun_ReportsAllTasks(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "download.yaml")
 	yml := `
@@ -82,13 +83,8 @@ downloads:
 	_ = run([]string{"-config", cfg}, &out, &errOut)
 
 	stdout := out.String()
-	aIdx := strings.Index(stdout, "task a_task")
-	zIdx := strings.Index(stdout, "task z_task")
-	if aIdx == -1 || zIdx == -1 {
+	if !strings.Contains(stdout, "task a_task") || !strings.Contains(stdout, "task z_task") {
 		t.Fatalf("expected both task lines in stdout, got %q", stdout)
-	}
-	if aIdx > zIdx {
-		t.Fatalf("expected a_task line before z_task line, got %q", stdout)
 	}
 }
 
@@ -255,6 +251,52 @@ downloads:
 	}
 	if rr.ReportVersion != reportSchemaVersion {
 		t.Fatalf("expected report_version=%q, got %q", reportSchemaVersion, rr.ReportVersion)
+	}
+}
+
+func TestRun_TaskConcurrencyExecutesTasksInParallel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "download.yaml")
+	yml := `
+config:
+  task_concurrency: 2
+  downloads_per_task_concurrency: 1
+  security:
+    allow_insecure_http: true
+  save:
+    base_download_dir: ` + dir + `/downloads
+downloads:
+  first:
+    url: ` + server.URL + `/a
+    save:
+      filename: first.txt
+  second:
+    url: ` + server.URL + `/b
+    save:
+      filename: second.txt
+`
+	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	var errOut strings.Builder
+	start := time.Now()
+	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	elapsed := time.Since(start)
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stderr=%s", exitCode, errOut.String())
+	}
+	if elapsed >= 750*time.Millisecond {
+		t.Fatalf("expected parallel task execution to finish in under 750ms, took %s", elapsed)
 	}
 }
 

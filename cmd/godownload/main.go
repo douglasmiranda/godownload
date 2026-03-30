@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/douglasmiranda/godownload/internal/config"
 	"github.com/douglasmiranda/godownload/internal/downloader"
@@ -41,6 +42,12 @@ type runReport struct {
 	ConfigPath    string       `json:"config_path"`
 	ReportFile    string       `json:"report_file,omitempty"`
 	StopTriggered bool         `json:"stop_triggered"`
+}
+
+type taskExecutionResult struct {
+	name string
+	task *config.DownloadTask
+	res  downloader.TaskResult
 }
 
 func main() {
@@ -105,6 +112,49 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	svc := &downloader.Service{}
 	names := sortedTaskNames(cfg.Downloads)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	taskConcurrency := cfg.Config.TaskConcurrency
+	if taskConcurrency <= 0 {
+		taskConcurrency = config.DefaultTaskConcurrency
+	}
+	sem := make(chan struct{}, taskConcurrency)
+	resultsCh := make(chan taskExecutionResult, len(names))
+	var wg sync.WaitGroup
+
+scheduleLoop:
+	for _, name := range names {
+		select {
+		case <-ctx.Done():
+			break scheduleLoop
+		default:
+		}
+
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break scheduleLoop
+		}
+
+		task := cfg.Downloads[name]
+		wg.Add(1)
+		go func(taskName string, task *config.DownloadTask) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			res := svc.RunTask(ctx, taskName, task, cfg.Config)
+			if task != nil && res.AbortAll {
+				cancel()
+			}
+			resultsCh <- taskExecutionResult{name: taskName, task: task, res: res}
+		}(name, task)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
 
 	totalSaved := 0
 	totalWarnings := 0
@@ -112,9 +162,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	totalSkipped := 0
 	stopTriggered := false
 
-	for _, name := range names {
-		task := cfg.Downloads[name]
-		res := svc.RunTask(context.Background(), name, task, cfg.Config)
+	for outcome := range resultsCh {
+		name := outcome.name
+		task := outcome.task
+		res := outcome.res
 
 		savedCount := len(res.Saved)
 		skippedCount := 0
@@ -156,6 +207,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			Errors:        errorMsgs,
 			SavedFiles:    savedFiles,
 			MetadataFiles: metadataFiles,
+			Aborted:       res.AbortAll,
 		})
 
 		if *outputMode == "text" {
@@ -173,13 +225,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			}
 		}
 
-		if task != nil && res.AbortAll {
+		if task != nil && res.AbortAll && !stopTriggered {
 			stopTriggered = true
-			report.Tasks[len(report.Tasks)-1].Aborted = true
 			if *outputMode == "text" {
 				fmt.Fprintf(stderr, "stop_all_tasks triggered by task %s; aborting remaining tasks\n", name)
 			}
-			break
 		}
 	}
 

@@ -13,8 +13,11 @@ import (
 func Validate(cfg *Config) []Diagnostic {
 	diags := make([]Diagnostic, 0)
 
-	if cfg.Config.Concurrency <= 0 {
-		diags = append(diags, Diagnostic{Severity: SeverityError, Field: "config.concurrency", Message: "must be greater than 0"})
+	if cfg.Config.TaskConcurrency <= 0 {
+		diags = append(diags, Diagnostic{Severity: SeverityError, Field: "config.task_concurrency", Message: "must be greater than 0"})
+	}
+	if cfg.Config.DownloadsPerTaskConcurrency <= 0 {
+		diags = append(diags, Diagnostic{Severity: SeverityError, Field: "config.downloads_per_task_concurrency", Message: "must be greater than 0"})
 	}
 
 	for name, task := range cfg.Downloads {
@@ -73,6 +76,9 @@ func validateTask(name string, task *DownloadTask, globalFilenameTemplateSet boo
 
 	if task.Timeout < 0 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "timeout", Message: "must be greater than or equal to 0"})
+	}
+	if task.DownloadsPerTaskConcurrency <= 0 {
+		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "downloads_per_task_concurrency", Message: "must be greater than 0"})
 	}
 	for _, code := range task.StopAllTasks.OnHTTPCode {
 		if code < 100 || code > 599 {

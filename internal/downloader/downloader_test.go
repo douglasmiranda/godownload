@@ -31,7 +31,7 @@ func TestRunTask_DirectDownload(t *testing.T) {
 	}
 
 	svc := &Service{}
-	res := svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 2})
+	res := svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 2})
 	if len(res.Errors) > 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
@@ -68,7 +68,7 @@ func TestRunTask_SelectorFlow(t *testing.T) {
 	}
 
 	svc := &Service{}
-	res := svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 2, DefaultAttrMapping: map[string]string{"a": "href"}})
+	res := svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 2, DefaultAttrMapping: map[string]string{"a": "href"}})
 	if len(res.Errors) > 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
@@ -94,7 +94,7 @@ func TestRunTask_BlocksDisallowedDomain(t *testing.T) {
 		},
 	}
 
-	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1})
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
 	if len(res.Errors) == 0 {
 		t.Fatal("expected security error for disallowed domain")
 	}
@@ -119,7 +119,7 @@ func TestRunTask_AppliesAuthHeader(t *testing.T) {
 		Auth:     &config.AuthConfig{Type: "bearer", Token: "secret"},
 	}
 
-	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1})
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
 	if len(res.Errors) > 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
@@ -149,7 +149,7 @@ func TestRunTask_RetryOnServerError(t *testing.T) {
 		Retry:    config.Retry{Enabled: true, Config: config.RetryConfig{OnRuntimeError: true, Retries: 2, Delay: 1}},
 	}
 
-	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1})
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
 	if len(res.Errors) > 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
@@ -176,7 +176,7 @@ func TestRunTask_StopAllTasksOnRuntimeError(t *testing.T) {
 		StopAllTasks: config.StopAllTasks{OnRuntimeError: true},
 	}
 
-	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1})
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
 	if len(res.Errors) == 0 {
 		t.Fatal("expected task errors")
 	}
@@ -202,7 +202,7 @@ func TestRunTask_StopAllTasksOnHTTPCodeAfterRetries(t *testing.T) {
 		StopAllTasks: config.StopAllTasks{OnHTTPCode: []int{500}},
 	}
 
-	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1})
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
 	if len(res.Errors) == 0 {
 		t.Fatal("expected task errors")
 	}
@@ -229,7 +229,7 @@ func TestRunTask_TreatWarningsAsErrors_PromotesWarnings(t *testing.T) {
 	}
 
 	svc := &Service{}
-	res := svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
+	res := svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
 
 	if len(res.Warnings) != 0 {
 		t.Fatalf("expected warnings to be promoted and cleared, got %v", res.Warnings)
@@ -257,7 +257,7 @@ func TestRunTask_TreatWarningsAsErrors_TriggersStopAllTasksOnRuntimeError(t *tes
 		Security:              config.SecurityConfig{AllowInsecureHTTP: true},
 	}
 
-	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
 	if len(res.Errors) == 0 {
 		t.Fatal("expected promoted warning to be treated as error")
 	}
@@ -288,7 +288,7 @@ func TestRunTask_TreatWarningsAsErrors_RetriesThenStopsAllTasksOnRuntimeError(t 
 		Security:              config.SecurityConfig{AllowInsecureHTTP: true},
 	}
 
-	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{Concurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
 	if len(res.Errors) == 0 {
 		t.Fatal("expected promoted warning to be treated as error")
 	}
