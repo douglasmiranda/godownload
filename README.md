@@ -1,127 +1,103 @@
 # godownload
 
-Go command-line downloader driven by YAML configuration.
+CLI tool to download files from static URLs, HTML pages (via selectors), or generated URL sets.
 
-The complete example catalog is in [download.yaml](download.yaml).
+## Status
 
-## What it does
+Installation is not released yet.
 
-- Downloads one or many files from static URLs or generated URL lists.
-- Discovers links from HTML pages using CSS selectors.
-- Supports retries, security restrictions, auth, metadata, and file naming templates.
-- Runs multiple tasks from one config file.
+## Installation
 
-## Quick start
+TODO
 
-```bash
-go run ./cmd/godownload -config ./download.yaml
-```
+## Build From Source
 
-Or with the built binary:
+### Manual build
 
 ```bash
-./godownload -config ./download.yaml
+go build -trimpath -ldflags="-s -w" -o dist/godownload ./cmd/godownload
 ```
 
-## Config model and precedence
+Run:
 
-Top-level keys:
+```bash
+./dist/godownload -config ./download.yaml
+```
 
-- `env_file`
-- `env`
-- `config`
-- `downloads`
+### Make targets
 
-Rules:
+```bash
+make build
+make test
+make e2e-tests
+```
 
-- Every entry in `downloads` must define `url`.
-- In `config`, you can define all task options except `url`.
-- Values in a task override values from `config`, even when the task value is `false` or `0`.
-- `config` also contains worker-only fields such as `task_concurrency`, `log_level`, and `default_attr_mappings`.
+The default binary is generated at `dist/godownload`.
 
-Environment variable precedence:
+## Config Examples
 
-1. Task `env`
-2. Global `env`
-3. `env_file` values (earlier file in list has higher precedence)
-4. System environment
+### 1) Simple: one URL
 
-## Options and defaults
+```yaml
+downloads:
+  one_file:
+    url: https://example.com/file.zip
+```
 
-Defaults are split into:
+### 2) Sophisticated: selector-based extraction
 
-- Config defaults: centralized in [internal/config/defaults.go](internal/config/defaults.go).
-- Runtime behavior defaults: applied where behavior executes.
+```yaml
+config:
+  save:
+    base_download_dir: ./downloads
 
-### Worker-only options (`config`)
+downloads:
+  page_assets:
+    url: https://example.com/downloads
+    selector: a.download-link
+    regex_filter: "Release \\d+"
+    save:
+      filename_template: "{{.DATE}}_{{.ORIGINAL_FILENAME}}"
+```
 
-| Option | Type | Default | Notes |
-|---|---|---|---|
-| `config.task_concurrency` | int | `5` | Number of download tasks executed concurrently. |
-| `config.downloads_per_task_concurrency` | int | `3` | Number of concurrent downloads allowed inside each task. |
-| `config.log_level` | string | `INFO` | Logging verbosity. |
-| `config.default_attr_mappings` | map[string]string | `a:href`, `img:src`, `link:href`, `script:src`, `iframe:src` | Used when task `attr` is not set. |
+### 3) Advanced: URL generation + retry + security + regex filters
 
-### Task options (usable in both `config` and each `downloads.<name>`)
+```yaml
+config:
+  save:
+    base_download_dir: ./downloads
 
-`url` is task-only and required.
+downloads:
+  generated_reports:
+    url: https://example.com/reports/{{.DATE}}/index.html
+    url_gen_dates:
+      var_name: DATE
+      date_range_start: "2026-01-01"
+      date_range_end: "2026-01-31"
+      date_format: YYYY-MM-DD
 
-| Option | Type | Default / Effective behavior | Notes |
-|---|---|---|---|
-| `selector` | string | empty | If empty, task downloads/generates URLs directly from `url`/`url_gen_*`. |
-| `attr` | string | empty | If empty, inferred from `default_attr_mappings` and matched element tag. |
-| `regex_filter` | string | empty | Filters by matched element text. |
-| `attr_val_regex_filter` | string | empty | Filters by selected attribute value (URL candidate). |
-| `url_gen_range` | object | nil | Optional URL generation strategy. |
-| `url_gen_list` | object | nil | Optional URL generation strategy. |
-| `url_gen_file` | object | nil | Optional URL generation strategy. |
-| `url_gen_dates` | object | nil | Optional URL generation strategy. |
-| `force_download` | bool | `false` | If `true`, do not skip when destination exists. |
-| `treat_warnings_as_errors` | bool | `false` | If `true`, runtime task warnings are promoted to errors. This can make the run fail and can trigger `stop_all_tasks.on_runtime_error`. |
-| `save.base_download_dir` | string | `.` (effective) | If unset, save uses current directory at runtime. |
-| `save.filename_template` | string | `{{.ORIGINAL_FILENAME}}` | Ignored when `save.filename` is set. Supports placeholders such as `{{.ORIGINAL_FILENAME}}`, `{{.URL}}` (sanitized), `{{.DOMAIN}}`, `{{.TIMESTAMP}}`, `{{.DATE}}`, `{{.TIME}}`, `{{.UUID}}`. Final filename keeps extension at the end: `save.extension` if set, otherwise original filename extension. |
-| `save.filename` | string | empty | Single-file tasks only. |
-| `save.override_if_exists` | bool | `false` | With `force_download=true`, overwrite existing file instead of suffixing name. |
-| `save.extension` | string | empty | If set, forces/overrides file extension. |
-| `save.save_metadata` | bool | `false` | Writes metadata JSON beside downloaded file. |
-| `base_download_dir` | string | empty | Deprecated alias for `save.base_download_dir`. |
-| `stop_all_tasks.on_runtime_error` | bool | `false` | Stop all remaining tasks when a runtime error remains after retries. |
-| `stop_all_tasks.on_http_code` | []int | empty | Stop all remaining tasks when final HTTP failure code matches one in the list. |
-| `timeout` | int (seconds) | `0` | `0` means runtime default HTTP timeout of `30s`. |
-| `download_limit` | int | `0` (unlimited) | Limits number of downloads attempted for task. |
-| `downloads_per_task_concurrency` | int | inherits `config.downloads_per_task_concurrency` | Overrides concurrent download limit for this task only. |
-| `selector_matches_limit` | int | `0` (unlimited) | Limits number of selector matches converted into candidates. |
-| `retry` | bool or object | disabled | `true` enables retry defaults; object config enables custom retry policy. |
-| `env` | map[string]string | empty | Task-scoped env vars for template/env expansion. |
-| `auth` | object | nil | Supports `basic`, `bearer`, `api_key`. |
-| `security.follow_redirects` | bool | `true` (effective) | Runtime follows redirects unless explicitly false. |
-| `security.allow_insecure_http` | bool | `false` | Blocks `http://` unless true. |
-| `security.allow_self_signed_cert` | bool | `false` | Controls TLS verification relaxation. |
-| `security.allowed_domains` | []string | empty | If set, only those domains/subdomains are allowed. |
-| `security.allowed_file_types` | []string | empty | If set, restricts extension/content-type checks. |
-| `max_depth` | int | `1` | Link-extraction traversal depth when using selectors. |
+    selector: a.report-link
+    regex_filter: "Monthly Report"
+    attr_val_regex_filter: "\\.pdf$"
 
-### Retry defaults when enabled
+    retry:
+      on_runtime_error: true
+      on_http_code: [429, 500, 502, 503, 504]
+      retries: 5
+      delay: 2
+      exponential_backoff: true
 
-If retry is enabled and values are not explicitly set:
+    security:
+      allow_insecure_http: false
+      follow_redirects: true
+      allowed_domains: [example.com, cdn.example.com]
+      allowed_file_types: [pdf]
 
-| Option | Default |
-|---|---|
-| `retry.on_runtime_error` | `true` |
-| `retry.retries` | `3` |
-| `retry.delay` | `1` |
-| `retry.exponential_backoff` | `true` |
-| `retry.on_http_code` | empty (runtime defaults to 4xx and 5xx) |
+    save:
+      filename_template: "{{.DOMAIN}}_{{.DATE}}_{{.ORIGINAL_FILENAME}}"
+      save_metadata: true
+```
 
-## Notes on future default changes
+## Full Documentation
 
-- Change config-level defaults in [internal/config/defaults.go](internal/config/defaults.go).
-- Keep runtime behavior defaults aligned when needed:
-  - HTTP timeout and redirect behavior in [internal/downloader/downloader.go](internal/downloader/downloader.go).
-  - Final fallback filename template and save directory behavior in [internal/storage/storage.go](internal/storage/storage.go).
-
-This split is intentional: config loading decides inherited values, runtime layers decide operational fallbacks.
-
-## Examples
-
-See [download.yaml](download.yaml) for comprehensive examples and inline guidance.
+For complete option reference, defaults, interactions, and validation behavior, see [DOWNLOAD.md](DOWNLOAD.md).
