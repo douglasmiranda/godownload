@@ -1,16 +1,23 @@
 # AGENTS.md
 
-This is a temporary AGENTS.md, its content covers the initial implementation/design of the GoDownload App.
+## Packages/Files Roles
 
-## GoDownload App
+- `DOWNLOAD.md`: The main file. It contains examples of all configurations, descriptions of fields, and usage guidelines.
+- `cmd`: Main entry point for the application. It initializes the worker and starts the download process.
+- `internal`: Core logic of the application, including task processing, downloading, retry logic, and more. It is organized into subpackages for better modularity and maintainability.
+- `internal/config`: Configuration structures and parsing logic for the application. It defines how the application reads and validates the configuration file.
+- `internal/discovery`: Discovering and extracting URLs from HTML pages based on selectors and filters.
+- `internal/downloader`: Logic for downloading files, it ends up making use of most of all the other modules under `internal` to perform the download tasks.
+- `internal/env`: Handling environment variables and dotenv files for the download tasks.
+- `internal/logging`: Logging, including the redaction of sensitive information in logs.
+- `internal/security`: Enforcing security policies for download tasks.
+- `internal/storage`: Saving downloaded files according to the specified naming and directory rules.
+- `internal/urlgen`: Generating URLs based on patterns, ranges, lists, or date formats.
+...
 
-The initial description is on the [GoDownload App README](./README.md).
+E2E tests. This doesn't substitute unit tests.
 
-## Important notes
-
-- check download.yaml for the extensive examples and some documentation in the comments.
-- the download.yaml file is the main configuration file for the GoDownload App, it contains the list of downloads and their configurations.
-- the download.yaml file also contains some default configurations that can be overridden by individual downloads.
-- the GoDownload App is designed to be flexible and extensible, so you can easily add new features and configurations as needed.
-- the GoDownload App is a command-line tool, so you can run it from the terminal and specify the download.yaml file as an argument.
-
+- `e2e-tests`: End-to-end tests in the form of YAML files.
+- `e2e-tests/success`: Successful tasks. With no warnings.
+- `e2e-tests/warnings`: Successful tasks. With warnings.
+- `e2e-tests/failures`: All the tasks should fail.  
