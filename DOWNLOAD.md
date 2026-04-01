@@ -1,6 +1,8 @@
 # GODOWNLOAD YAML REFERENCE
 
-This document is the source of truth for Godownload YAML.
+This document is the reference for Godownload YAML.
+
+**The source of truth is always the code**, but this doc tries to be comprehensive and explicit about all features, options, and behaviors.
 
 Goals:
 - Complete feature coverage.
