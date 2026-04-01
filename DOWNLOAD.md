@@ -290,11 +290,24 @@ Use this when URLs come from patterns, lists, files, or date ranges.
 | `url_gen_dates.date_range_end` | `string` | none | Yes | Must match `date_format` and be `>= start`. |
 | `url_gen_dates.date_format` | `string` | `YYYY-MM-DD` | No | Allowed: `YYYY-MM-DD`, `MM/DD/YYYY`, `DD-MM-YYYY`. |
 
-Minimal example:
+#### Important Filename Note for Query-based URLs
+
+When the generated variable is only in query parameters, the URL path can stay constant. In those cases, the default `save.filename_template: {{.ORIGINAL_FILENAME}}` may produce repeated filenames.
+
+Example:
+
+- Path-based variable (usually unique original names): `https://example.com/files/{{.N}}.zip`
+- Query-based variable (path may stay the same): `https://example.com/files?file={{.N}}.zip`
+
+For query-based patterns, prefer setting `save.filename_template` explicitly, for example using `{{.URL}}`.
+
+#### Examples for All `url_gen_*` Variants
+
+`url_gen_range` example:
 
 ```yaml
 downloads:
-  generated_ids:
+  generated_range:
     url: https://example.com/files/{{.N}}.zip
     url_gen_range:
       var_name: N
@@ -302,23 +315,41 @@ downloads:
       range_end: 10
 ```
 
-Advanced example:
+`url_gen_list` example:
 
 ```yaml
 downloads:
-  generated_dates:
-    url: https://example.com/reports/{{.DATE}}.pdf
+  generated_list:
+    url: https://example.com/files/{{.NAME}}.zip
+    url_gen_list:
+      var_name: NAME
+      values: [report-a, report-b, report-c]
+```
+
+`url_gen_file` example:
+
+```yaml
+downloads:
+  generated_file:
+    url: https://example.com/files/{{.ID}}.zip
+    url_gen_file:
+      var_name: ID
+      file: ./ids.txt
+```
+
+Full `url_gen_dates` example with query parameter and deterministic filename:
+
+```yaml
+downloads:
+  example_dynamic_urls_date_range_no_filename_in_url:
+    url: https://example.com/files?date={{.DATE}}
     url_gen_dates:
       var_name: DATE
       date_range_start: "2026-01-01"
-      date_range_end: "2026-01-31"
+      date_range_end: "2026-01-02"
       date_format: YYYY-MM-DD
-    retry:
-      on_runtime_error: true
-      on_http_code: [429, 500, 502, 503]
-      retries: 5
-      delay: 2
-      exponential_backoff: true
+    save:
+      filename_template: "report-{{.URL}}.pdf"
 ```
 
 See also: [4) Reliability and Fail-fast](#4-reliability-and-fail-fast), [Validation Rules and Failure Modes](#validation-rules-and-failure-modes).
@@ -534,6 +565,7 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | Existing file + `force_download: false` | File is skipped with warning reason "file already exists". |
 | Existing file + `force_download: true` + `save.override_if_exists: true` | Existing file is overwritten in place. |
 | Existing file + `force_download: true` + `save.override_if_exists: false` | New path is generated with suffix `_1`, `_2`, ... |
+| URL varies only by query params + default `save.filename_template` | Filename may repeat because default template uses path-derived `ORIGINAL_FILENAME`; use `save.filename_template` like `report-{{.URL}}.pdf` for uniqueness. |
 | `save.filename` + `save.filename_template` | `save.filename` wins. Template is ignored and warning diagnostic is emitted. |
 | `save.filename` with selector/url_gen tasks | Invalid config because task may resolve multiple URLs. |
 
