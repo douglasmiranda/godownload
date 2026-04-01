@@ -3,9 +3,9 @@
 ## Packages/Files Roles
 
 - `DOWNLOAD.md`: The main file. It contains examples of all configurations, descriptions of fields, and usage guidelines.
-- `cmd`: Main entry point for the application. It initializes the worker and starts the download process.
-- `internal`: Core logic of the application, including task processing, downloading, retry logic, and more. It is organized into subpackages for better modularity and maintainability.
-- `internal/config`: Configuration structures and parsing logic for the application. It defines how the application reads and validates the configuration file.
+- `cmd`: Main entry point for godownload. It initializes the worker and starts the download process.
+- `internal`: Core logic of godownload, including task processing, downloading, retry logic, and more. It is organized into subpackages for better modularity and maintainability.
+- `internal/config`: Configuration structures and parsing logic for godownload. It defines how it reads and validates the configuration file.
 - `internal/discovery`: Discovering and extracting URLs from HTML pages based on selectors and filters.
 - `internal/downloader`: Logic for downloading files, it ends up making use of most of all the other modules under `internal` to perform the download tasks.
 - `internal/env`: Handling environment variables and dotenv files for the download tasks.
