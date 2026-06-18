@@ -70,9 +70,6 @@ func IsAllowedByContentType(contentType string, allowed []string) bool {
 		if strings.EqualFold(mediaType, "application/"+norm) || strings.EqualFold(mediaType, "image/"+norm) || strings.EqualFold(mediaType, "text/"+norm) {
 			return true
 		}
-		if strings.Contains(strings.ToLower(mediaType), norm) {
-			return true
-		}
 	}
 	return false
 }

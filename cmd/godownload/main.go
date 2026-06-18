@@ -102,7 +102,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		if *outputMode == "json" {
-			b, _ := json.MarshalIndent(report, "", "  ")
+			b, err := json.MarshalIndent(report, "", "  ")
+			if err != nil {
+				fmt.Fprintf(stderr, "failed to encode report: %s\n", logging.RedactText(err.Error()))
+				return 1
+			}
 			fmt.Fprintf(stdout, "%s\n", string(b))
 			return 0
 		}
@@ -245,7 +249,11 @@ scheduleLoop:
 	}
 
 	if *outputMode == "json" {
-		b, _ := json.MarshalIndent(report, "", "  ")
+		b, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "failed to encode report: %s\n", logging.RedactText(err.Error()))
+			return 1
+		}
 		fmt.Fprintf(stdout, "%s\n", string(b))
 	} else {
 		fmt.Fprintf(stdout, "summary: tasks=%d saved=%d skipped=%d warnings=%d errors=%d\n", len(cfg.Downloads), totalSaved, totalSkipped, totalWarnings, totalErrors)

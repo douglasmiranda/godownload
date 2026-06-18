@@ -30,4 +30,7 @@ func TestIsAllowedByContentType(t *testing.T) {
 	if IsAllowedByContentType("application/octet-stream", []string{"pdf"}) {
 		t.Fatal("expected content-type to be blocked")
 	}
+	if IsAllowedByContentType("application/x-pdf-tool", []string{"pdf"}) {
+		t.Fatal("expected substring content-type match to be blocked")
+	}
 }

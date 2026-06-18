@@ -264,7 +264,7 @@ Use this when URLs come from patterns, lists, files, or date ranges.
 | `url_gen_range.var_name` | `string` | none | Yes | Must be referenced in `url` as `{{.VAR_NAME}}`. |
 | `url_gen_range.range_start` | `int` | none | Yes | Start inclusive. |
 | `url_gen_range.range_end` | `int` | none | Yes | End inclusive, must be `>= range_start`. |
-| `url_gen_range.step` | `int` | `1` | No | Must not be `0`. |
+| `url_gen_range.step` | `int` | `1` | No | Must be `> 0`. |
 
 #### `url_gen_list`
 
@@ -299,6 +299,10 @@ Example:
 - Query-based variable (path may stay the same): `https://example.com/files?file={{.N}}.zip`
 
 For query-based patterns, prefer setting `save.filename_template` explicitly, for example using `{{.URL}}`.
+
+#### URL Generation Memory Note
+
+Generated URLs are materialized as an in-memory list before downloads begin. Very large ranges, long date spans, or large `url_gen_file` inputs can therefore use significant memory before `download_limit` is applied. Keep generated sets reasonably bounded, split very large jobs into smaller tasks/configs, or prefer smaller input files when memory usage matters.
 
 #### Examples for All `url_gen_*` Variants
 
@@ -436,9 +440,9 @@ Use this when tasks need credentials and trust restrictions.
 |---|---|---|---|---|
 | `security.follow_redirects` | `bool` | `true` | No | Redirect target is still validated by domain/scheme policy. |
 | `security.allow_insecure_http` | `bool` | `false` | No | Must be true to allow `http://` URLs. |
-| `security.allow_self_signed_cert` | `bool` | `false` | No | Enables TLS skip-verify mode. |
-| `security.allowed_domains` | `[]string` | `[]` | No | If non-empty, only exact domain/subdomain matches are allowed. |
-| `security.allowed_file_types` | `[]string` | `[]` | No | Extension/content-type allow-list. Values may include leading dot or not. |
+| `security.allow_self_signed_cert` | `bool` | `false` | No | Enables TLS skip-verify mode, which disables normal certificate verification for the request. |
+| `security.allowed_domains` | `[]string` | `[]` | No | If non-empty, only exact domain/subdomain matches are allowed for direct URLs, selector page fetches, downloads, and redirects. |
+| `security.allowed_file_types` | `[]string` | `[]` | No | Extension/content-type allow-list. Values may include leading dot or not; content types must match common `application/`, `image/`, or `text/` media types for the extension. |
 | `security.max_download_size` | `size` | `0` | No | Rejects downloads larger than this. Checked against `Content-Length` upfront and enforced while reading; nothing is written to disk on rejection. `0` means no limit. Accepts bytes or suffixes: `500kb`, `10mb`, `1gb`. |
 | `security.max_in_memory_size` | `size` | `500mb` | No | Safety cap on how many bytes a single download may buffer in memory (the body is read into RAM). Defaults to 500MiB; set `0` to disable. Accepts bytes or suffixes: `500kb`, `10mb`, `1gb`. |
 
@@ -585,7 +589,7 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | Scenario | Effective behavior |
 |---|---|
 | `allow_insecure_http: false` | `http://` URLs are blocked. |
-| `allowed_domains` set | Exact domain/subdomain filter applies to direct URLs and redirects. |
+| `allowed_domains` set | Exact domain/subdomain filter applies to direct URLs, selector page fetches, downloads, and redirects. |
 | `allowed_file_types` set and URL has no extension | URL is blocked by extension policy. |
 | `allowed_file_types` set | Both URL extension and response content-type are checked. |
 
@@ -598,7 +602,7 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | `url` missing | Error |
 | `task_concurrency <= 0` or `downloads_per_task_concurrency <= 0` | Error |
 | More than one `url_gen_*` block in same task | Error |
-| `url_gen_range.step == 0` | Error |
+| `url_gen_range.step <= 0` | Error |
 | `url_gen_range.range_end < range_start` | Error |
 | `url_gen_list.values` empty | Error |
 | Invalid `url_gen_dates` format/date/order | Error |

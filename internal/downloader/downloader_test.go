@@ -210,6 +210,72 @@ func TestRunTask_SelectorFlow(t *testing.T) {
 	}
 }
 
+func TestRunTask_DedupesGeneratedCandidateURLs(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: server.URL + "/{{.PATH}}.json",
+		URLGenList: &config.URLGenList{
+			VarName: "PATH",
+			Values:  []string{"same", "same"},
+		},
+		Save: config.SaveConfig{BaseDownloadDir: dir, FilenameTemplate: "{{.URL}}"},
+		Security: config.SecurityConfig{
+			AllowedFileTypes:  []string{"json"},
+			AllowInsecureHTTP: true,
+		},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 2})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if requests != 1 {
+		t.Fatalf("expected one request after dedupe, got %d", requests)
+	}
+	if len(res.Saved) != 1 {
+		t.Fatalf("expected one saved file, got %d", len(res.Saved))
+	}
+}
+
+func TestRunTask_BlocksDisallowedSelectorSeedURL(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<a href="/file.pdf">file</a>`)
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:      server.URL + "/",
+		Selector: "a",
+		Security: config.SecurityConfig{
+			AllowedDomains:    []string{"example.com"},
+			AllowedFileTypes:  []string{"pdf"},
+			AllowInsecureHTTP: true,
+		},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if len(res.Warnings) == 0 {
+		t.Fatal("expected warning when selector seed URL is blocked")
+	}
+	if requests != 0 {
+		t.Fatalf("expected blocked selector seed to avoid request, got %d requests", requests)
+	}
+}
+
 func TestRunTask_BlocksDisallowedDomain(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")

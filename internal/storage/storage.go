@@ -97,7 +97,10 @@ func Save(taskName string, task *config.DownloadTask, downloadURL string, conten
 // caller to write to, or skipped=true when the file already exists and the
 // task is not configured to force/override.
 func openTarget(baseDir string, name string, task *config.DownloadTask) (f *os.File, finalPath string, finalName string, skipped bool, err error) {
-	finalPath = filepath.Join(baseDir, name)
+	finalPath, err = containedPath(baseDir, name)
+	if err != nil {
+		return nil, "", name, false, err
+	}
 
 	if task.ForceDownload && task.Save.OverrideIfExists {
 		f, err = os.OpenFile(finalPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -120,7 +123,10 @@ func openTarget(baseDir string, name string, task *config.DownloadTask) (f *os.F
 	base := strings.TrimSuffix(name, ext)
 	for i := 1; ; i++ {
 		candidateName := fmt.Sprintf("%s_%d%s", base, i, ext)
-		candidatePath := filepath.Join(baseDir, candidateName)
+		candidatePath, err := containedPath(baseDir, candidateName)
+		if err != nil {
+			return nil, "", candidateName, false, err
+		}
 		f, err = os.OpenFile(candidatePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
 			return f, candidatePath, candidateName, false, nil
@@ -129,6 +135,22 @@ func openTarget(baseDir string, name string, task *config.DownloadTask) (f *os.F
 			return nil, candidatePath, candidateName, false, err
 		}
 	}
+}
+
+func containedPath(baseDir string, name string) (string, error) {
+	base, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve base directory: %w", err)
+	}
+	target := filepath.Join(base, name)
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return "", fmt.Errorf("resolve target path: %w", err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("resolved path escapes base directory: %s", name)
+	}
+	return target, nil
 }
 
 func resolveFilename(task *config.DownloadTask, downloadURL string, originalName string) (string, error) {

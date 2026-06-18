@@ -118,6 +118,7 @@ func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config
 		result.Errors = append(result.Errors, err)
 		return finalizeTaskResult(task, result)
 	}
+	candidateURLs = dedupeStrings(candidateURLs)
 	if len(candidateURLs) == 0 {
 		result.Warnings = append(result.Warnings, "no candidate URLs found; task skipped")
 		return finalizeTaskResult(task, result)
@@ -245,6 +246,12 @@ func (s *Service) resolveDownloadCandidates(ctx context.Context, client *http.Cl
 				continue
 			}
 			visited[pageURL] = struct{}{}
+			if !security.IsURLAllowed(pageURL, task.Security.AllowInsecureHTTP, task.Security.AllowedDomains) {
+				if shouldStopAllTasks(task, fmt.Errorf("selector page blocked by security policy: %s", pageURL)) {
+					return nil, "", fmt.Errorf("selector page blocked by security policy: %s", pageURL)
+				}
+				continue
+			}
 
 			body, _, err := s.fetchURL(ctx, client, task, pageURL)
 			if err != nil {
@@ -422,7 +429,13 @@ func buildClient(task *config.DownloadTask) *http.Client {
 	if task.Timeout > 0 {
 		timeout = time.Duration(task.Timeout) * time.Second
 	}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: task.Security.AllowSelfSigned}}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = task.Security.AllowSelfSigned
 
 	c := &http.Client{
 		Timeout:   timeout,
@@ -471,6 +484,8 @@ func applyAuth(req *http.Request, auth *config.AuthConfig) error {
 		default:
 			return fmt.Errorf("unsupported auth.key_in: %s", auth.KeyIn)
 		}
+	default:
+		return fmt.Errorf("unsupported auth.type: %s", auth.Type)
 	}
 	return nil
 }

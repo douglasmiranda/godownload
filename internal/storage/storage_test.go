@@ -81,6 +81,19 @@ func TestSave_FilenameCannotTraverseBaseDir(t *testing.T) {
 	}
 }
 
+func TestOpenTargetRejectsPathOutsideBaseDir(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{}
+
+	f, _, _, _, err := openTarget(dir, "../escape.txt", task)
+	if err == nil {
+		if f != nil {
+			f.Close()
+		}
+		t.Fatal("expected path containment error")
+	}
+}
+
 func TestSave_WritesFileAndMetadata(t *testing.T) {
 	dir := t.TempDir()
 	task := &config.DownloadTask{
