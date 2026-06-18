@@ -72,8 +72,7 @@ Highest to lowest precedence during task resolution:
 
 | Topic | Behavior |
 |---|---|
-| Variable syntax | Use `$VAR_NAME` in strings. |
-| Unsupported syntax | `${VAR_NAME}` is not expanded by the built-in expander. |
+| Variable syntax | Use `$VAR_NAME` or `${VAR_NAME}` in strings. |
 | Missing variable | Validation diagnostic is produced and token stays unresolved. |
 | `env_file` paths | Relative values resolve from YAML config directory. Missing files are ignored. |
 
