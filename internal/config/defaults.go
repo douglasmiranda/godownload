@@ -42,6 +42,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Config.Env == nil {
 		cfg.Config.Env = map[string]string{}
 	}
+	if !cfg.Config.hasField("security.max_in_memory_size") && cfg.Config.Security.MaxInMemorySize == 0 {
+		cfg.Config.Security.MaxInMemorySize = DefaultMaxInMemorySize
+	}
 
 	for _, task := range cfg.Downloads {
 		if task == nil {
@@ -239,6 +242,12 @@ func mergeSecurityDefaults(task *DownloadTask, defaults SecurityConfig) Security
 	}
 	if !task.hasField("security.allowed_file_types") && len(defaults.AllowedFileTypes) > 0 {
 		out.AllowedFileTypes = append([]string{}, defaults.AllowedFileTypes...)
+	}
+	if !task.hasField("security.max_download_size") {
+		out.MaxDownloadSize = defaults.MaxDownloadSize
+	}
+	if !task.hasField("security.max_in_memory_size") {
+		out.MaxInMemorySize = defaults.MaxInMemorySize
 	}
 	return out
 }

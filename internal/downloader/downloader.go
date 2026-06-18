@@ -102,7 +102,15 @@ func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config
 		return finalizeTaskResult(task, result)
 	}
 
-	candidateURLs, warn, err := s.resolveDownloadCandidates(ctx, seedURLs, task, workerCfg.DefaultAttrMapping)
+	// Build the HTTP client once per task: its configuration (timeout, TLS,
+	// redirect policy) is task-level, and reusing a single client/transport
+	// lets connections be pooled across the task's downloads.
+	client := s.HTTPClient
+	if client == nil {
+		client = buildClient(task)
+	}
+
+	candidateURLs, warn, err := s.resolveDownloadCandidates(ctx, client, seedURLs, task, workerCfg.DefaultAttrMapping)
 	if warn != "" {
 		result.Warnings = append(result.Warnings, warn)
 	}
@@ -145,7 +153,7 @@ downloadLoop:
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			saveRes, dlErr := s.downloadAndSave(ctx, taskName, task, downloadURL)
+			saveRes, dlErr := s.downloadAndSave(ctx, client, taskName, task, downloadURL)
 			mu.Lock()
 			defer mu.Unlock()
 			if dlErr != nil {
@@ -211,19 +219,20 @@ func (w warningAsError) Error() string {
 	return fmt.Sprintf("warning treated as error: %s", w.msg)
 }
 
-func (s *Service) resolveDownloadCandidates(ctx context.Context, seedURLs []string, task *config.DownloadTask, defaultAttrMapping map[string]string) ([]string, string, error) {
+func (s *Service) resolveDownloadCandidates(ctx context.Context, client *http.Client, seedURLs []string, task *config.DownloadTask, defaultAttrMapping map[string]string) ([]string, string, error) {
 	if strings.TrimSpace(task.Selector) == "" {
 		return seedURLs, "", nil
 	}
-	if task.MaxDepth < 1 {
-		task.MaxDepth = 1
+	maxDepth := task.MaxDepth
+	if maxDepth < 1 {
+		maxDepth = 1
 	}
 
 	frontier := append([]string{}, seedURLs...)
 	visited := map[string]struct{}{}
 	all := []string{}
 
-	for depth := 1; depth <= task.MaxDepth; depth++ {
+	for depth := 1; depth <= maxDepth; depth++ {
 		if err := ctx.Err(); err != nil {
 			return nil, "", err
 		}
@@ -237,7 +246,7 @@ func (s *Service) resolveDownloadCandidates(ctx context.Context, seedURLs []stri
 			}
 			visited[pageURL] = struct{}{}
 
-			body, _, err := s.fetchURL(ctx, task, pageURL)
+			body, _, err := s.fetchURL(ctx, client, task, pageURL)
 			if err != nil {
 				if shouldStopAllTasks(task, err) {
 					return nil, "", fmt.Errorf("fetch selector page %s: %w", pageURL, err)
@@ -259,7 +268,7 @@ func (s *Service) resolveDownloadCandidates(ctx context.Context, seedURLs []stri
 				continue
 			}
 			all = append(all, links...)
-			if depth < task.MaxDepth {
+			if depth < maxDepth {
 				nextFrontier = append(nextFrontier, links...)
 			}
 		}
@@ -275,7 +284,7 @@ func (s *Service) resolveDownloadCandidates(ctx context.Context, seedURLs []stri
 	return dedupeStrings(all), "", nil
 }
 
-func (s *Service) downloadAndSave(ctx context.Context, taskName string, task *config.DownloadTask, downloadURL string) (storage.SaveResult, error) {
+func (s *Service) downloadAndSave(ctx context.Context, client *http.Client, taskName string, task *config.DownloadTask, downloadURL string) (storage.SaveResult, error) {
 	if !security.IsURLAllowed(downloadURL, task.Security.AllowInsecureHTTP, task.Security.AllowedDomains) {
 		return storage.SaveResult{}, fmt.Errorf("URL blocked by security policy: %s", downloadURL)
 	}
@@ -283,7 +292,7 @@ func (s *Service) downloadAndSave(ctx context.Context, taskName string, task *co
 		return storage.SaveResult{}, fmt.Errorf("URL extension blocked by security.allowed_file_types: %s", downloadURL)
 	}
 
-	body, contentType, err := s.fetchURL(ctx, task, downloadURL)
+	body, contentType, err := s.fetchURL(ctx, client, task, downloadURL)
 	if err != nil {
 		return storage.SaveResult{}, err
 	}
@@ -294,8 +303,7 @@ func (s *Service) downloadAndSave(ctx context.Context, taskName string, task *co
 	return storage.Save(taskName, task, downloadURL, body, contentType)
 }
 
-func (s *Service) fetchURL(ctx context.Context, task *config.DownloadTask, rawURL string) ([]byte, string, error) {
-	client := s.HTTPClient
+func (s *Service) fetchURL(ctx context.Context, client *http.Client, task *config.DownloadTask, rawURL string) ([]byte, string, error) {
 	if client == nil {
 		client = buildClient(task)
 	}
@@ -356,11 +364,57 @@ func (s *Service) doOnce(ctx context.Context, client *http.Client, task *config.
 		return nil, "", resp.StatusCode, httpStatusError{Code: resp.StatusCode, Err: fmt.Errorf("HTTPError: request failed with status %d", resp.StatusCode)}
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, resp.Header.Get("Content-Type"), resp.StatusCode, fmt.Errorf("read response body: %w", err)
+	contentType := resp.Header.Get("Content-Type")
+	fileLimit := task.Security.MaxDownloadSize.Int64()
+	memLimit := task.Security.MaxInMemorySize.Int64()
+
+	// Reject early using the server-declared size when it is available.
+	if fileLimit > 0 && resp.ContentLength > fileLimit {
+		io.Copy(io.Discard, resp.Body)
+		return nil, contentType, resp.StatusCode, fmt.Errorf("download size %d exceeds security.max_download_size %d for %s", resp.ContentLength, fileLimit, rawURL)
 	}
-	return body, resp.Header.Get("Content-Type"), resp.StatusCode, nil
+	if memLimit > 0 && resp.ContentLength > memLimit {
+		io.Copy(io.Discard, resp.Body)
+		return nil, contentType, resp.StatusCode, fmt.Errorf("download size %d exceeds security.max_in_memory_size %d for %s", resp.ContentLength, memLimit, rawURL)
+	}
+
+	readCap := minPositive(fileLimit, memLimit)
+	if readCap <= 0 {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, contentType, resp.StatusCode, fmt.Errorf("read response body: %w", err)
+		}
+		return body, contentType, resp.StatusCode, nil
+	}
+
+	// Read one extra byte so an oversized body is detectable even when
+	// Content-Length is unknown (e.g. chunked responses).
+	body, err := io.ReadAll(io.LimitReader(resp.Body, readCap+1))
+	if err != nil {
+		return nil, contentType, resp.StatusCode, fmt.Errorf("read response body: %w", err)
+	}
+	if int64(len(body)) > readCap {
+		if fileLimit > 0 && int64(len(body)) > fileLimit {
+			return nil, contentType, resp.StatusCode, fmt.Errorf("download exceeds security.max_download_size %d for %s", fileLimit, rawURL)
+		}
+		return nil, contentType, resp.StatusCode, fmt.Errorf("download exceeds security.max_in_memory_size %d for %s", memLimit, rawURL)
+	}
+	return body, contentType, resp.StatusCode, nil
+}
+
+// minPositive returns the smallest value greater than zero, or 0 when none of
+// the provided values are positive (meaning "no limit").
+func minPositive(values ...int64) int64 {
+	min := int64(0)
+	for _, v := range values {
+		if v <= 0 {
+			continue
+		}
+		if min == 0 || v < min {
+			min = v
+		}
+	}
+	return min
 }
 
 func buildClient(task *config.DownloadTask) *http.Client {

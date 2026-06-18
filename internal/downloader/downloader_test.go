@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/douglasmiranda/godownload/internal/config"
@@ -40,6 +41,138 @@ func TestRunTask_DirectDownload(t *testing.T) {
 	}
 	if _, err := os.Stat(res.Saved[0].FilePath); err != nil {
 		t.Fatalf("expected saved file to exist: %v", err)
+	}
+}
+
+func TestRunTask_RejectsDownloadExceedingMaxSize(t *testing.T) {
+	payload := "0123456789" // 10 bytes
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		fmt.Fprint(w, payload)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:  server.URL + "/file.pdf",
+		Save: config.SaveConfig{BaseDownloadDir: dir},
+		Security: config.SecurityConfig{
+			AllowedFileTypes:  []string{"pdf"},
+			AllowInsecureHTTP: true,
+			MaxDownloadSize:   5,
+		},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected error when download exceeds max_download_size")
+	}
+	if !strings.Contains(res.Errors[0].Error(), "max_download_size") {
+		t.Fatalf("expected max_download_size error, got %v", res.Errors[0])
+	}
+	if len(res.Saved) != 0 {
+		t.Fatalf("expected no files saved, got %d", len(res.Saved))
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*"))
+	if len(files) != 0 {
+		t.Fatalf("expected nothing written to disk, got %v", files)
+	}
+}
+
+func TestRunTask_AllowsDownloadWithinMaxSize(t *testing.T) {
+	payload := "0123456789"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		fmt.Fprint(w, payload)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:  server.URL + "/file.pdf",
+		Save: config.SaveConfig{BaseDownloadDir: dir},
+		Security: config.SecurityConfig{
+			AllowedFileTypes:  []string{"pdf"},
+			AllowInsecureHTTP: true,
+			MaxDownloadSize:   config.ByteSize(len(payload)),
+		},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if len(res.Saved) != 1 {
+		t.Fatalf("expected 1 saved file, got %d", len(res.Saved))
+	}
+}
+
+func TestRunTask_TaskMaxDownloadSizeOverridesGlobalLimit(t *testing.T) {
+	payload := "0123456789"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		fmt.Fprint(w, payload)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfg, _, err := config.LoadBytes([]byte(fmt.Sprintf(`
+config:
+  downloads_per_task_concurrency: 1
+  security:
+    allow_insecure_http: true
+    max_download_size: 9b
+  save:
+    base_download_dir: %s
+downloads:
+  one:
+    url: %s/file.pdf
+    security:
+      max_download_size: 10b
+`, dir, server.URL)))
+	if err != nil {
+		t.Fatalf("unexpected config load error: %v", err)
+	}
+
+	task := cfg.Downloads["one"]
+	res := (&Service{}).RunTask(context.Background(), "one", task, cfg.Config)
+	if len(res.Errors) > 0 {
+		t.Fatalf("expected task max_download_size override to allow download, got errors: %v", res.Errors)
+	}
+	if len(res.Saved) != 1 {
+		t.Fatalf("expected 1 saved file, got %d", len(res.Saved))
+	}
+}
+
+func TestRunTask_RejectsDownloadExceedingMaxInMemorySize(t *testing.T) {
+	payload := "0123456789"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		fmt.Fprint(w, payload)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:  server.URL + "/file.pdf",
+		Save: config.SaveConfig{BaseDownloadDir: dir},
+		Security: config.SecurityConfig{
+			AllowedFileTypes:  []string{"pdf"},
+			AllowInsecureHTTP: true,
+			MaxInMemorySize:   4,
+		},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected error when download exceeds max_in_memory_size")
+	}
+	if !strings.Contains(res.Errors[0].Error(), "max_in_memory_size") {
+		t.Fatalf("expected max_in_memory_size error, got %v", res.Errors[0])
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*"))
+	if len(files) != 0 {
+		t.Fatalf("expected nothing written to disk, got %v", files)
 	}
 }
 

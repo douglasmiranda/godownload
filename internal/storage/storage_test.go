@@ -1,13 +1,85 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/douglasmiranda/godownload/internal/config"
 )
+
+func TestSave_ConcurrentSameNameNoDataLoss(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:           "https://example.com",
+		ForceDownload: true,
+		Save:          config.SaveConfig{BaseDownloadDir: dir},
+	}
+
+	const n = 16
+	var wg sync.WaitGroup
+	results := make([]SaveResult, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Distinct URLs that all resolve to the same base filename.
+			url := fmt.Sprintf("https://host%d.example.com/file.zip", i)
+			results[i], errs[i] = Save("task1", task, url, []byte(fmt.Sprintf("content-%d", i)), "application/zip")
+		}(i)
+	}
+	wg.Wait()
+
+	seen := map[string]bool{}
+	for i := range errs {
+		if errs[i] != nil {
+			t.Fatalf("save %d failed: %v", i, errs[i])
+		}
+		if results[i].Skipped {
+			t.Fatalf("save %d unexpectedly skipped", i)
+		}
+		if seen[results[i].FilePath] {
+			t.Fatalf("two concurrent saves claimed the same path %q", results[i].FilePath)
+		}
+		seen[results[i].FilePath] = true
+	}
+
+	files, _ := filepath.Glob(filepath.Join(dir, "*"))
+	if len(files) != n {
+		t.Fatalf("expected %d distinct files, got %d", n, len(files))
+	}
+}
+
+func TestSave_FilenameCannotTraverseBaseDir(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:  "https://example.com/a",
+		Save: config.SaveConfig{BaseDownloadDir: dir, Filename: "../../escape.txt"},
+	}
+
+	res, err := Save("task1", task, "https://example.com/a", []byte("x"), "text/plain")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(res.SavedFileName, "/") || strings.Contains(res.SavedFileName, "\\") {
+		t.Fatalf("filename contains path separators: %q", res.SavedFileName)
+	}
+	abs, err := filepath.Abs(res.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(abs, absDir+string(os.PathSeparator)) {
+		t.Fatalf("saved file escaped base dir: %s not under %s", abs, absDir)
+	}
+}
 
 func TestSave_WritesFileAndMetadata(t *testing.T) {
 	dir := t.TempDir()

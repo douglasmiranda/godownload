@@ -79,8 +79,7 @@ func ParseDotEnvFile(path string) (map[string]string, error) {
 		}
 		key := strings.TrimSpace(parts[0])
 		val := strings.TrimSpace(parts[1])
-		val = strings.Trim(val, "\"")
-		val = strings.Trim(val, "'")
+		val = stripMatchingQuotes(val)
 		if key == "" {
 			continue
 		}
@@ -90,4 +89,18 @@ func ParseDotEnvFile(path string) (map[string]string, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// stripMatchingQuotes removes a single pair of surrounding quotes (either
+// double or single) without trimming unmatched or interior quote characters.
+func stripMatchingQuotes(v string) string {
+	if len(v) < 2 {
+		return v
+	}
+	first := v[0]
+	last := v[len(v)-1]
+	if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+		return v[1 : len(v)-1]
+	}
+	return v
 }

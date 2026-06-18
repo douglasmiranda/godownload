@@ -40,3 +40,29 @@ func TestExpandString(t *testing.T) {
 		t.Fatalf("unexpected missing vars: %#v", missing)
 	}
 }
+
+func TestExpandString_BracedAndEscaped(t *testing.T) {
+	got, missing := ExpandString("${A}-bar/${B}", map[string]string{"A": "x", "B": "y"})
+	if got != "x-bar/y" {
+		t.Fatalf("unexpected braced expansion: %q", got)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("unexpected missing vars: %#v", missing)
+	}
+
+	got, missing = ExpandString("price is $$5 for ${ITEM}", map[string]string{"ITEM": "pen"})
+	if got != "price is $5 for pen" {
+		t.Fatalf("unexpected escaped expansion: %q", got)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("unexpected missing vars: %#v", missing)
+	}
+
+	got, missing = ExpandString("${MISSING}", map[string]string{})
+	if got != "${MISSING}" {
+		t.Fatalf("expected unresolved braced token to be preserved, got %q", got)
+	}
+	if len(missing) != 1 || missing[0] != "MISSING" {
+		t.Fatalf("unexpected missing vars: %#v", missing)
+	}
+}

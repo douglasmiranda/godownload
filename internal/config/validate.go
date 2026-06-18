@@ -136,7 +136,9 @@ func validateURLGenRange(taskName string, taskURL string, cfg *URLGenRange) []Di
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_range.var_name", Message: "is required"})
 	}
 	diags = append(diags, validateURLTemplateVar(taskName, taskURL, "url_gen_range.var_name", cfg.VarName)...)
-	if cfg.Step == 0 {
+	if cfg.Step < 0 {
+		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_range.step", Message: "must be greater than 0"})
+	} else if cfg.Step == 0 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_range.step", Message: "must not be zero"})
 	}
 	if cfg.RangeEnd < cfg.RangeStart {
@@ -181,22 +183,23 @@ func validateURLGenDates(taskName string, taskURL string, cfg *URLGenDates) []Di
 	if strings.TrimSpace(cfg.DateRangeEnd) == "" {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_dates.date_range_end", Message: "is required"})
 	}
-	if strings.TrimSpace(cfg.DateFormat) == "" {
-		cfg.DateFormat = "YYYY-MM-DD"
+	format := strings.TrimSpace(cfg.DateFormat)
+	if format == "" {
+		format = "YYYY-MM-DD"
 	}
-	layout, err := dateFormatToGoLayout(cfg.DateFormat)
+	layout, err := dateFormatToGoLayout(format)
 	if err != nil {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_dates.date_format", Message: err.Error()})
 		return diags
 	}
 	start, err := time.Parse(layout, cfg.DateRangeStart)
 	if err != nil {
-		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_dates.date_range_start", Message: fmt.Sprintf("invalid date for format %s", cfg.DateFormat)})
+		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_dates.date_range_start", Message: fmt.Sprintf("invalid date for format %s", format)})
 		return diags
 	}
 	end, err := time.Parse(layout, cfg.DateRangeEnd)
 	if err != nil {
-		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_dates.date_range_end", Message: fmt.Sprintf("invalid date for format %s", cfg.DateFormat)})
+		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "url_gen_dates.date_range_end", Message: fmt.Sprintf("invalid date for format %s", format)})
 		return diags
 	}
 	if end.Before(start) {
@@ -320,6 +323,12 @@ func validateAuth(taskName string, auth *AuthConfig) []Diagnostic {
 
 func validateSecurity(taskName string, sec SecurityConfig) []Diagnostic {
 	diags := make([]Diagnostic, 0)
+	if sec.MaxDownloadSize < 0 {
+		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "security.max_download_size", Message: "must be greater than or equal to 0"})
+	}
+	if sec.MaxInMemorySize < 0 {
+		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "security.max_in_memory_size", Message: "must be greater than or equal to 0"})
+	}
 	for _, domain := range sec.AllowedDomains {
 		if strings.TrimSpace(domain) == "" {
 			diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "security.allowed_domains", Message: "must not contain empty values"})

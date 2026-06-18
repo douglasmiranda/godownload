@@ -6,12 +6,20 @@ import (
 	"strings"
 )
 
-var envVarPattern = regexp.MustCompile(`\$[A-Za-z_][A-Za-z0-9_]*`)
+// envVarPattern matches, in order: a literal "$$" escape, the braced form
+// "${VAR}", and the bare form "$VAR".
+var envVarPattern = regexp.MustCompile(`\$\$|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
 
 func ExpandString(value string, vars map[string]string) (string, []string) {
 	missing := []string{}
 	replaced := envVarPattern.ReplaceAllStringFunc(value, func(token string) string {
-		k := strings.TrimPrefix(token, "$")
+		if token == "$$" {
+			return "$"
+		}
+		k := token[1:]
+		if strings.HasPrefix(k, "{") {
+			k = strings.TrimSuffix(strings.TrimPrefix(k, "{"), "}")
+		}
 		v, ok := vars[k]
 		if !ok {
 			missing = append(missing, k)

@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/douglasmiranda/godownload/internal/config"
 )
@@ -63,6 +64,26 @@ func TestGenerateDates(t *testing.T) {
 	}
 }
 
+func TestGenerateDates_DefaultsToYYYYMMDDWhenFormatOmitted(t *testing.T) {
+	task := &config.DownloadTask{
+		URL: "https://example.com/file_{{.DATE}}.zip",
+		URLGenDates: &config.URLGenDates{
+			VarName: "DATE", DateRangeStart: "2022-01-01", DateRangeEnd: "2022-01-02",
+		},
+	}
+	got, err := Generate(task, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{
+		"https://example.com/file_2022-01-01.zip",
+		"https://example.com/file_2022-01-02.zip",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected URLs: %#v", got)
+	}
+}
+
 func TestGenerateFile(t *testing.T) {
 	task := &config.DownloadTask{
 		URL:        "https://example.com/{{.URL}}",
@@ -78,6 +99,34 @@ func TestGenerateFile(t *testing.T) {
 	want := []string{"https://example.com/a", "https://example.com/b"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected URLs: %#v", got)
+	}
+}
+
+func TestGenerateRange_NegativeStepFailsInsteadOfLooping(t *testing.T) {
+	task := &config.DownloadTask{
+		URL:         "https://example.com/file_{{.N}}.zip",
+		URLGenRange: &config.URLGenRange{VarName: "N", RangeStart: 1, RangeEnd: 10, Step: -1},
+	}
+
+	done := make(chan struct{})
+	var got []string
+	var err error
+	go func() {
+		got, err = Generate(task, nil)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Generate did not return; negative step likely caused an infinite loop")
+	}
+
+	if err == nil {
+		t.Fatalf("expected error for negative step, got %#v", got)
+	}
+	if !strings.Contains(err.Error(), "step") {
+		t.Fatalf("expected step error, got %v", err)
 	}
 }
 

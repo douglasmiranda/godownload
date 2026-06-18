@@ -8,6 +8,10 @@ const (
 	DefaultLogLevel                    = "INFO"
 	DefaultFilenameTemplate            = "{{.ORIGINAL_FILENAME}}"
 	DefaultMaxDepth                    = 1
+	// DefaultMaxInMemorySize is the safety cap applied to how many bytes a
+	// single download may buffer in memory when the user has not configured
+	// security.max_in_memory_size explicitly.
+	DefaultMaxInMemorySize ByteSize = 500 << 20 // 500 MiB
 )
 
 type Config struct {
@@ -230,4 +234,12 @@ type SecurityConfig struct {
 	AllowSelfSigned   bool     `yaml:"allow_self_signed_cert"`
 	AllowedDomains    []string `yaml:"allowed_domains"`
 	AllowedFileTypes  []string `yaml:"allowed_file_types"`
+	// MaxDownloadSize rejects any download whose size exceeds this value
+	// (checked against Content-Length upfront and enforced while reading).
+	// 0 means no limit. Accepts suffixes like 500kb, 10mb, 1gb.
+	MaxDownloadSize ByteSize `yaml:"max_download_size"`
+	// MaxInMemorySize caps how many bytes a single download may buffer in
+	// memory (the whole body is read into RAM). Defaults to
+	// DefaultMaxInMemorySize when unset; 0 disables the cap.
+	MaxInMemorySize ByteSize `yaml:"max_in_memory_size"`
 }

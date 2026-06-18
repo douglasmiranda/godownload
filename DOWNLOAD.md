@@ -439,6 +439,8 @@ Use this when tasks need credentials and trust restrictions.
 | `security.allow_self_signed_cert` | `bool` | `false` | No | Enables TLS skip-verify mode. |
 | `security.allowed_domains` | `[]string` | `[]` | No | If non-empty, only exact domain/subdomain matches are allowed. |
 | `security.allowed_file_types` | `[]string` | `[]` | No | Extension/content-type allow-list. Values may include leading dot or not. |
+| `security.max_download_size` | `size` | `0` | No | Rejects downloads larger than this. Checked against `Content-Length` upfront and enforced while reading; nothing is written to disk on rejection. `0` means no limit. Accepts bytes or suffixes: `500kb`, `10mb`, `1gb`. |
+| `security.max_in_memory_size` | `size` | `500mb` | No | Safety cap on how many bytes a single download may buffer in memory (the body is read into RAM). Defaults to 500MiB; set `0` to disable. Accepts bytes or suffixes: `500kb`, `10mb`, `1gb`. |
 
 Minimal example:
 

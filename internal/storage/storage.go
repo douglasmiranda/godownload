@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -52,20 +53,19 @@ func Save(taskName string, task *config.DownloadTask, downloadURL string, conten
 	if err != nil {
 		return SaveResult{}, err
 	}
-	finalPath := filepath.Join(baseDir, finalName)
 
-	if st, err := os.Stat(finalPath); err == nil && !st.IsDir() {
-		if !task.ForceDownload {
-			return SaveResult{Skipped: true, SkipReason: "file already exists", FilePath: finalPath, SavedFileName: finalName}, nil
-		}
-		if task.Save.OverrideIfExists {
-			// Continue and overwrite below.
-		} else {
-			finalPath, finalName = nextAvailablePath(finalPath)
-		}
+	f, finalPath, finalName, skipped, err := openTarget(baseDir, finalName, task)
+	if err != nil {
+		return SaveResult{}, fmt.Errorf("create downloaded file: %w", err)
 	}
-
-	if err := os.WriteFile(finalPath, content, 0o644); err != nil {
+	if skipped {
+		return SaveResult{Skipped: true, SkipReason: "file already exists", FilePath: finalPath, SavedFileName: finalName}, nil
+	}
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		return SaveResult{}, fmt.Errorf("write downloaded file: %w", err)
+	}
+	if err := f.Close(); err != nil {
 		return SaveResult{}, fmt.Errorf("write downloaded file: %w", err)
 	}
 
@@ -91,9 +91,55 @@ func Save(taskName string, task *config.DownloadTask, downloadURL string, conten
 	return result, nil
 }
 
+// openTarget atomically reserves the destination path so that concurrent
+// downloads within a task cannot race on os.Stat/os.WriteFile (TOCTOU) and
+// silently overwrite each other. It returns an open file handle for the
+// caller to write to, or skipped=true when the file already exists and the
+// task is not configured to force/override.
+func openTarget(baseDir string, name string, task *config.DownloadTask) (f *os.File, finalPath string, finalName string, skipped bool, err error) {
+	finalPath = filepath.Join(baseDir, name)
+
+	if task.ForceDownload && task.Save.OverrideIfExists {
+		f, err = os.OpenFile(finalPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		return f, finalPath, name, false, err
+	}
+
+	f, err = os.OpenFile(finalPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err == nil {
+		return f, finalPath, name, false, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return nil, finalPath, name, false, err
+	}
+
+	if !task.ForceDownload {
+		return nil, finalPath, name, true, nil
+	}
+
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	for i := 1; ; i++ {
+		candidateName := fmt.Sprintf("%s_%d%s", base, i, ext)
+		candidatePath := filepath.Join(baseDir, candidateName)
+		f, err = os.OpenFile(candidatePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			return f, candidatePath, candidateName, false, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, candidatePath, candidateName, false, err
+		}
+	}
+}
+
 func resolveFilename(task *config.DownloadTask, downloadURL string, originalName string) (string, error) {
 	if strings.TrimSpace(task.Save.Filename) != "" {
-		return applyExtension(task.Save.Filename, task.Save.Extension), nil
+		// Sanitize to a single path-component so an explicit filename cannot
+		// traverse outside the base download directory (e.g. "../../etc/x").
+		cleaned := sanitizeFilenameValue(filepath.Base(task.Save.Filename))
+		if cleaned == "" {
+			return "", fmt.Errorf("resolved filename is empty after sanitization")
+		}
+		return applyExtension(cleaned, task.Save.Extension), nil
 	}
 
 	tplText := task.Save.FilenameTemplate
@@ -197,17 +243,6 @@ func domainFromURL(downloadURL string) string {
 		return "unknown-domain"
 	}
 	return host
-}
-
-func nextAvailablePath(path string) (string, string) {
-	ext := filepath.Ext(path)
-	base := strings.TrimSuffix(path, ext)
-	for i := 1; ; i++ {
-		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
-		if _, err := os.Stat(candidate); os.IsNotExist(err) {
-			return candidate, filepath.Base(candidate)
-		}
-	}
 }
 
 func metadataPathFor(filePath string) string {
