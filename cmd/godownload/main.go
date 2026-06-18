@@ -114,10 +114,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	svc := &downloader.Service{}
 	names := sortedTaskNames(cfg.Downloads)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	var cancelOnce sync.Once
+	svc := &downloader.Service{
+		OnAbortAll: func() { cancelOnce.Do(cancel) },
+	}
 
 	taskConcurrency := cfg.Config.TaskConcurrency
 	if taskConcurrency <= 0 {
@@ -148,9 +152,6 @@ scheduleLoop:
 			defer func() { <-sem }()
 
 			res := svc.RunTask(ctx, taskName, task, cfg.Config)
-			if task != nil && res.AbortAll {
-				cancel()
-			}
 			resultsCh <- taskExecutionResult{name: taskName, task: task, res: res}
 		}(name, task)
 	}

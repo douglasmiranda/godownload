@@ -560,6 +560,7 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | `retry: true` without `retry.on_http_code` | Retries all HTTP status codes `>= 400` and runtime errors (`on_runtime_error` default true). |
 | `retry.on_http_code` set | Retries only listed HTTP codes. Runtime errors still depend on `on_runtime_error`. |
 | `stop_all_tasks.on_http_code` with retry enabled | Stop-on-code check is evaluated after retry loop is exhausted. |
+| `stop_all_tasks` during selector/discovery or URL generation | Matching stop conditions set abort-all the same as download-phase failures; remaining tasks are cancelled promptly. |
 | `treat_warnings_as_errors: true` + retry enabled + `on_runtime_error: true` | Warning-only failures are promoted and retried. |
 | `treat_warnings_as_errors: true` + `stop_all_tasks.on_runtime_error: true` | Promoted warning errors can set abort-all. |
 

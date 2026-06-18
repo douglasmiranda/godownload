@@ -34,6 +34,7 @@ type TaskResult struct {
 type Service struct {
 	HTTPClient *http.Client
 	FileLoader URLFileLoader
+	OnAbortAll func()
 }
 
 func (s *Service) RunTask(ctx context.Context, taskName string, task *config.DownloadTask, workerCfg config.WorkerConfig) TaskResult {
@@ -73,14 +74,14 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 			continue
 		}
 
-		if hasOnlyPromotedWarningErrors(result.Errors) && shouldStopAllTasks(task, result.Errors[0]) {
-			result.AbortAll = true
+		if hasOnlyPromotedWarningErrors(result.Errors) {
+			s.markAbortAll(task, &result, result.Errors[0])
 		}
 		return result
 	}
 
-	if hasOnlyPromotedWarningErrors(last.Errors) && shouldStopAllTasks(task, last.Errors[0]) {
-		last.AbortAll = true
+	if hasOnlyPromotedWarningErrors(last.Errors) {
+		s.markAbortAll(task, &last, last.Errors[0])
 	}
 	return last
 }
@@ -95,6 +96,7 @@ func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config
 	seedURLs, err := urlgen.Generate(task, urlgen.FileLoader(loader))
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("generate urls: %w", err))
+		s.markAbortAll(task, &result, err)
 		return finalizeTaskResult(task, result)
 	}
 	if len(seedURLs) == 0 {
@@ -116,6 +118,7 @@ func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config
 	}
 	if err != nil {
 		result.Errors = append(result.Errors, err)
+		s.markAbortAll(task, &result, err)
 		return finalizeTaskResult(task, result)
 	}
 	candidateURLs = dedupeStrings(candidateURLs)
@@ -159,9 +162,8 @@ downloadLoop:
 			defer mu.Unlock()
 			if dlErr != nil {
 				result.Errors = append(result.Errors, dlErr)
-				if shouldStopAllTasks(task, dlErr) {
+				if s.markAbortAll(task, &result, dlErr) {
 					stop.Store(true)
-					result.AbortAll = true
 				}
 				return
 			}
@@ -507,6 +509,17 @@ func shouldRetry(cfg config.RetryConfig, err error, statusCode int) bool {
 		}
 	}
 	return false
+}
+
+func (s *Service) markAbortAll(task *config.DownloadTask, result *TaskResult, err error) bool {
+	if !shouldStopAllTasks(task, err) {
+		return false
+	}
+	result.AbortAll = true
+	if s != nil && s.OnAbortAll != nil {
+		s.OnAbortAll()
+	}
+	return true
 }
 
 func shouldStopAllTasks(task *config.DownloadTask, err error) bool {

@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/douglasmiranda/godownload/internal/config"
 )
@@ -496,5 +499,114 @@ func TestRunTask_TreatWarningsAsErrors_RetriesThenStopsAllTasksOnRuntimeError(t 
 	}
 	if attempt != 3 {
 		t.Fatalf("expected 3 task attempts (initial + 2 retries), got %d", attempt)
+	}
+}
+
+func TestRunTask_StopAllTasksOnSelectorHTTPCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:          server.URL + "/",
+		Selector:     "a",
+		StopAllTasks: config.StopAllTasks{OnHTTPCode: []int{401}},
+		Security:     config.SecurityConfig{AllowInsecureHTTP: true},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected selector fetch error")
+	}
+	if !res.AbortAll {
+		t.Fatal("expected AbortAll to be true for selector-phase HTTP stop")
+	}
+}
+
+func TestRunTask_StopAllTasksOnURLGenError(t *testing.T) {
+	task := &config.DownloadTask{
+		URLGenFile: &config.URLGenFile{
+			VarName: "URL",
+			File:    "missing.txt",
+		},
+		StopAllTasks: config.StopAllTasks{OnRuntimeError: true},
+	}
+
+	svc := &Service{
+		FileLoader: func(path string) ([]string, error) {
+			return nil, fmt.Errorf("file not found: %s", path)
+		},
+	}
+	res := svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected urlgen error")
+	}
+	if !res.AbortAll {
+		t.Fatal("expected AbortAll to be true for urlgen failure with on_runtime_error")
+	}
+}
+
+func TestRunTask_OnAbortAllCalledBeforeReturn(t *testing.T) {
+	releaseSlow := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/fail.json":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case "/slow.json":
+			<-releaseSlow
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: server.URL + "/{{.PATH}}.json",
+		URLGenList: &config.URLGenList{
+			VarName: "PATH",
+			Values:  []string{"fail", "slow"},
+		},
+		Save:         config.SaveConfig{BaseDownloadDir: dir, FilenameTemplate: "{{.URL}}"},
+		StopAllTasks: config.StopAllTasks{OnHTTPCode: []int{500}},
+		Security: config.SecurityConfig{
+			AllowedFileTypes:  []string{"json"},
+			AllowInsecureHTTP: true,
+		},
+	}
+
+	hookCalled := make(chan struct{})
+	var hookOnce sync.Once
+	var runDone int32
+	svc := &Service{
+		OnAbortAll: func() {
+			hookOnce.Do(func() { close(hookCalled) })
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 2})
+		atomic.StoreInt32(&runDone, 1)
+		close(done)
+	}()
+
+	select {
+	case <-hookCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for OnAbortAll")
+	}
+	if atomic.LoadInt32(&runDone) != 0 {
+		t.Fatal("OnAbortAll should fire before RunTask returns")
+	}
+	close(releaseSlow)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RunTask to return")
 	}
 }
