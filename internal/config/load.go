@@ -14,9 +14,12 @@ func LoadFile(path string) (*Config, []Diagnostic, error) {
 		return nil, nil, fmt.Errorf("read config file: %w", err)
 	}
 
-	cfg, preDiags, err := LoadBytes(b)
+	// Parse and apply defaults, but defer validation until after environment
+	// resolution so values like "$VAR" are validated in their resolved form
+	// (and validation runs exactly once).
+	cfg, err := parseConfig(b)
 	if err != nil {
-		return cfg, preDiags, err
+		return nil, nil, err
 	}
 
 	configDir := filepath.Dir(path)
@@ -25,8 +28,7 @@ func LoadFile(path string) (*Config, []Diagnostic, error) {
 		return nil, nil, fmt.Errorf("resolve environment variables: %w", err)
 	}
 
-	postDiags := Validate(cfg)
-	diags = append(diags, postDiags...)
+	diags = append(diags, Validate(cfg)...)
 	for _, d := range diags {
 		if d.Severity == SeverityError {
 			return cfg, diags, ValidationError{Diagnostics: diags}
@@ -37,16 +39,11 @@ func LoadFile(path string) (*Config, []Diagnostic, error) {
 }
 
 func LoadBytes(data []byte) (*Config, []Diagnostic, error) {
-	cfg := &Config{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, nil, fmt.Errorf("parse yaml: %w", err)
+	cfg, err := parseConfig(data)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	if cfg.Downloads == nil {
-		cfg.Downloads = map[string]*DownloadTask{}
-	}
-
-	applyDefaults(cfg)
 	diags := Validate(cfg)
 	for _, d := range diags {
 		if d.Severity == SeverityError {
@@ -54,4 +51,18 @@ func LoadBytes(data []byte) (*Config, []Diagnostic, error) {
 		}
 	}
 	return cfg, diags, nil
+}
+
+func parseConfig(data []byte) (*Config, error) {
+	cfg := &Config{}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parse yaml: %w", err)
+	}
+
+	if cfg.Downloads == nil {
+		cfg.Downloads = map[string]*DownloadTask{}
+	}
+
+	applyDefaults(cfg)
+	return cfg, nil
 }
