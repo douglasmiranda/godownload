@@ -213,6 +213,83 @@ func TestRunTask_SelectorFlow(t *testing.T) {
 	}
 }
 
+type recordingProgress struct {
+	mu      sync.Mutex
+	started []string
+	totals  map[string]int
+	done    map[string]int
+}
+
+func (r *recordingProgress) TaskStarted(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.started = append(r.started, name)
+}
+
+func (r *recordingProgress) TaskTotal(name string, total int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.totals == nil {
+		r.totals = make(map[string]int)
+	}
+	r.totals[name] = total
+}
+
+func (r *recordingProgress) TaskFileDone(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.done == nil {
+		r.done = make(map[string]int)
+	}
+	r.done[name]++
+}
+
+func (r *recordingProgress) TaskFinished(name string) {}
+
+func TestRunTask_ReportsProgress(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<a href="%s/f1.pdf">File 1</a><a href="%s/f2.pdf">File 2</a>`, server.URL, server.URL)
+		case "/f1.pdf", "/f2.pdf":
+			w.Header().Set("Content-Type", "application/pdf")
+			fmt.Fprint(w, "pdf")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:      server.URL + "/",
+		Selector: "a",
+		Save:     config.SaveConfig{BaseDownloadDir: dir},
+		Security: config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
+	}
+
+	progress := &recordingProgress{}
+	svc := &Service{TaskProgress: progress}
+	res := svc.RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 2, DefaultAttrMapping: map[string]string{"a": "href"}})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	if len(progress.started) != 1 || progress.started[0] != "task1" {
+		t.Fatalf("expected one TaskStarted for task1, got %v", progress.started)
+	}
+	if progress.totals["task1"] != 2 {
+		t.Fatalf("expected total 2, got %d", progress.totals["task1"])
+	}
+	if progress.done["task1"] != 2 {
+		t.Fatalf("expected 2 TaskFileDone calls, got %d", progress.done["task1"])
+	}
+}
+
 func TestRunTask_DedupesGeneratedCandidateURLs(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

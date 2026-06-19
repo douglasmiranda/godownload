@@ -14,6 +14,7 @@ import (
 	"github.com/douglasmiranda/godownload/internal/config"
 	"github.com/douglasmiranda/godownload/internal/downloader"
 	"github.com/douglasmiranda/godownload/internal/logging"
+	"github.com/douglasmiranda/godownload/internal/ui"
 )
 
 const reportSchemaVersion = "1"
@@ -60,6 +61,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	configPath := fs.String("config", "./download.yaml", "Path to the download config file")
 	outputMode := fs.String("output", "text", "Output mode: text or json")
 	reportFile := fs.String("report-file", "", "Optional path to write the structured run report as JSON")
+	noColor := fs.Bool("no-color", false, "Disable color output")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -67,6 +69,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "invalid -output value %q, expected text or json\n", *outputMode)
 		return 2
 	}
+
+	useInteractiveUI := *outputMode == "text" && ui.IsTerminal(stdout)
+	printer := ui.New(stdout, stderr, ui.Options{
+		NoColor:     *noColor,
+		Interactive: useInteractiveUI,
+	})
 
 	cfg, diags, err := config.LoadFile(*configPath)
 	report := runReport{
@@ -81,13 +89,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		msg := logging.RedactText(d.String())
 		report.Diagnostics = append(report.Diagnostics, msg)
 		if *outputMode == "text" {
-			fmt.Fprintf(stderr, "%s\n", msg)
+			printer.PrintDiagnostic(msg)
 		}
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "failed to load config: %s\n", logging.RedactText(err.Error()))
+		printer.PrintError(fmt.Sprintf("failed to load config: %s", logging.RedactText(err.Error())))
 		if writeErr := writeReportFile(*reportFile, report); writeErr != nil {
-			fmt.Fprintf(stderr, "failed to write report file: %s\n", logging.RedactText(writeErr.Error()))
+			printer.PrintError(fmt.Sprintf("failed to write report file: %s", logging.RedactText(writeErr.Error())))
 		}
 		if *outputMode == "json" {
 			_ = json.NewEncoder(stdout).Encode(report)
@@ -98,13 +106,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(cfg.Downloads) == 0 {
 		report.TaskCount = 0
 		if writeErr := writeReportFile(*reportFile, report); writeErr != nil {
-			fmt.Fprintf(stderr, "failed to write report file: %s\n", logging.RedactText(writeErr.Error()))
+			printer.PrintError(fmt.Sprintf("failed to write report file: %s", logging.RedactText(writeErr.Error())))
 			return 1
 		}
 		if *outputMode == "json" {
 			b, err := json.MarshalIndent(report, "", "  ")
 			if err != nil {
-				fmt.Fprintf(stderr, "failed to encode report: %s\n", logging.RedactText(err.Error()))
+				printer.PrintError(fmt.Sprintf("failed to encode report: %s", logging.RedactText(err.Error())))
 				return 1
 			}
 			fmt.Fprintf(stdout, "%s\n", string(b))
@@ -121,6 +129,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	var cancelOnce sync.Once
 	svc := &downloader.Service{
 		OnAbortAll: func() { cancelOnce.Do(cancel) },
+	}
+	if printer.Interactive() && printer.Progress() != nil {
+		svc.TaskProgress = printer.Progress()
 	}
 
 	taskConcurrency := cfg.Config.TaskConcurrency
@@ -166,6 +177,10 @@ scheduleLoop:
 	totalErrors := 0
 	totalSkipped := 0
 	stopTriggered := false
+	stopTask := ""
+
+	var tableRows []ui.TaskRow
+	var tableDetails []ui.TaskDetails
 
 	for outcome := range resultsCh {
 		name := outcome.name
@@ -216,24 +231,38 @@ scheduleLoop:
 		})
 
 		if *outputMode == "text" {
-			fmt.Fprintf(stdout, "task %s: saved=%d skipped=%d warnings=%d errors=%d\n", name, savedCount-skippedCount, skippedCount, len(res.Warnings), len(res.Errors))
-		}
-
-		for _, w := range warningMsgs {
-			if *outputMode == "text" {
-				fmt.Fprintf(stderr, "[warning] %s: %s\n", name, w)
-			}
-		}
-		for _, e := range errorMsgs {
-			if *outputMode == "text" {
-				fmt.Fprintf(stderr, "[error] %s: %s\n", name, e)
+			if printer.Interactive() {
+				tableRows = append(tableRows, ui.TaskRow{
+					Name:     name,
+					Saved:    savedCount - skippedCount,
+					Skipped:  skippedCount,
+					Warnings: len(res.Warnings),
+					Errors:   len(res.Errors),
+					Failed:   len(res.Errors) > 0,
+				})
+				if len(warningMsgs) > 0 || len(errorMsgs) > 0 {
+					tableDetails = append(tableDetails, ui.TaskDetails{
+						Name:     name,
+						Warnings: warningMsgs,
+						Errors:   errorMsgs,
+					})
+				}
+			} else {
+				printer.PrintLegacyTaskLine(name, savedCount-skippedCount, skippedCount, len(res.Warnings), len(res.Errors))
+				for _, w := range warningMsgs {
+					printer.PrintLegacyWarning(name, w)
+				}
+				for _, e := range errorMsgs {
+					printer.PrintLegacyError(name, e)
+				}
 			}
 		}
 
 		if task != nil && res.AbortAll && !stopTriggered {
 			stopTriggered = true
-			if *outputMode == "text" {
-				fmt.Fprintf(stderr, "stop_all_tasks triggered by task %s; aborting remaining tasks\n", name)
+			stopTask = name
+			if *outputMode == "text" && !printer.Interactive() {
+				printer.PrintLegacyStop(name)
 			}
 		}
 	}
@@ -245,19 +274,21 @@ scheduleLoop:
 	report.ErrorTotal = totalErrors
 	report.StopTriggered = stopTriggered
 	if writeErr := writeReportFile(*reportFile, report); writeErr != nil {
-		fmt.Fprintf(stderr, "failed to write report file: %s\n", logging.RedactText(writeErr.Error()))
+		printer.PrintError(fmt.Sprintf("failed to write report file: %s", logging.RedactText(writeErr.Error())))
 		return 1
 	}
 
 	if *outputMode == "json" {
 		b, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
-			fmt.Fprintf(stderr, "failed to encode report: %s\n", logging.RedactText(err.Error()))
+			printer.PrintError(fmt.Sprintf("failed to encode report: %s", logging.RedactText(err.Error())))
 			return 1
 		}
 		fmt.Fprintf(stdout, "%s\n", string(b))
+	} else if printer.Interactive() {
+		printer.PrintResultsTable(tableRows, tableDetails, len(cfg.Downloads), totalSaved, totalSkipped, totalWarnings, totalErrors, stopTriggered, stopTask)
 	} else {
-		fmt.Fprintf(stdout, "summary: tasks=%d saved=%d skipped=%d warnings=%d errors=%d\n", len(cfg.Downloads), totalSaved, totalSkipped, totalWarnings, totalErrors)
+		printer.PrintLegacySummary(len(cfg.Downloads), totalSaved, totalSkipped, totalWarnings, totalErrors)
 	}
 	if totalErrors > 0 {
 		return 1

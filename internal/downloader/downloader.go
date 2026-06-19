@@ -23,6 +23,14 @@ import (
 
 type URLFileLoader func(path string) ([]string, error)
 
+// TaskProgress reports per-task file download progress for interactive CLI output.
+type TaskProgress interface {
+	TaskStarted(name string)
+	TaskTotal(name string, total int)
+	TaskFileDone(name string)
+	TaskFinished(name string)
+}
+
 type TaskResult struct {
 	TaskName string
 	Saved    []storage.SaveResult
@@ -32,9 +40,10 @@ type TaskResult struct {
 }
 
 type Service struct {
-	HTTPClient *http.Client
-	FileLoader URLFileLoader
-	OnAbortAll func()
+	HTTPClient   *http.Client
+	FileLoader   URLFileLoader
+	OnAbortAll   func()
+	TaskProgress TaskProgress
 }
 
 func (s *Service) RunTask(ctx context.Context, taskName string, task *config.DownloadTask, workerCfg config.WorkerConfig) TaskResult {
@@ -42,6 +51,11 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 		result := TaskResult{TaskName: taskName}
 		result.Errors = append(result.Errors, fmt.Errorf("task is nil"))
 		return result
+	}
+
+	if s.TaskProgress != nil {
+		s.TaskProgress.TaskStarted(taskName)
+		defer s.TaskProgress.TaskFinished(taskName)
 	}
 
 	attempts := 1
@@ -130,6 +144,10 @@ func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config
 		candidateURLs = candidateURLs[:task.DownloadLimit]
 	}
 
+	if s.TaskProgress != nil {
+		s.TaskProgress.TaskTotal(taskName, len(candidateURLs))
+	}
+
 	concurrency := task.DownloadsPerTaskConcurrency
 	if concurrency <= 0 {
 		concurrency = workerCfg.DownloadsPerTaskConcurrency
@@ -156,6 +174,9 @@ downloadLoop:
 		go func(downloadURL string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			if s.TaskProgress != nil {
+				defer s.TaskProgress.TaskFileDone(taskName)
+			}
 
 			saveRes, dlErr := s.downloadAndSave(ctx, client, taskName, task, downloadURL)
 			mu.Lock()
