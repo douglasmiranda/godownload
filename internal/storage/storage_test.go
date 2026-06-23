@@ -164,6 +164,37 @@ func TestSave_OverrideWhenForcedAndAllowed(t *testing.T) {
 	}
 }
 
+func TestSave_ForceDownloadAddsSuffixWhenOverrideDisabled(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "a.pdf")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task := &config.DownloadTask{
+		URL:           "https://example.com/a.pdf",
+		ForceDownload: true,
+		Save:          config.SaveConfig{BaseDownloadDir: dir},
+	}
+
+	result, err := Save("task1", task, "https://example.com/a.pdf", []byte("new"), "application/pdf")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Skipped {
+		t.Fatal("expected force_download to save a new file")
+	}
+	if result.SavedFileName != "a_1.pdf" {
+		t.Fatalf("expected suffixed filename a_1.pdf, got %q", result.SavedFileName)
+	}
+	b, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "old" {
+		t.Fatalf("expected original file to remain unchanged, got %q", string(b))
+	}
+}
+
 func TestSave_TemplateKeepsOriginalExtensionAtEnd(t *testing.T) {
 	dir := t.TempDir()
 	task := &config.DownloadTask{

@@ -34,9 +34,12 @@ downloads:
       values: ["1", "2"]
 `)
 
-	_, _, err := LoadBytes(data)
+	_, diags, err := LoadBytes(data)
 	if err == nil {
 		t.Fatal("expected validation error")
+	}
+	if !hasError(diags, "bad", "url_gen_*") {
+		t.Fatalf("expected url_gen_* validation error, got %#v", diags)
 	}
 }
 
@@ -74,9 +77,12 @@ downloads:
       filename: fixed.zip
 `)
 
-	_, _, err := LoadBytes(data)
+	_, diags, err := LoadBytes(data)
 	if err == nil {
 		t.Fatal("expected validation error")
+	}
+	if !hasError(diags, "bad", "save.filename") {
+		t.Fatalf("expected save.filename validation error, got %#v", diags)
 	}
 }
 
@@ -89,9 +95,12 @@ downloads:
     regex_filter: "["
 `)
 
-	_, _, err := LoadBytes(data)
+	_, diags, err := LoadBytes(data)
 	if err == nil {
 		t.Fatal("expected validation error")
+	}
+	if !hasError(diags, "bad", "regex_filter") {
+		t.Fatalf("expected regex_filter validation error, got %#v", diags)
 	}
 }
 
@@ -107,9 +116,12 @@ downloads:
       date_format: "BAD"
 `)
 
-	_, _, err := LoadBytes(data)
+	_, diags, err := LoadBytes(data)
 	if err == nil {
 		t.Fatal("expected validation error")
+	}
+	if !hasError(diags, "bad", "url_gen_dates.date_format") {
+		t.Fatalf("expected url_gen_dates.date_format validation error, got %#v", diags)
 	}
 }
 
@@ -141,9 +153,144 @@ downloads:
       key_in: header
 `)
 
-	_, _, err := LoadBytes(data)
+	_, diags, err := LoadBytes(data)
 	if err == nil {
 		t.Fatal("expected validation error")
+	}
+	if !hasError(diags, "bad", "auth.key_value") {
+		t.Fatalf("expected auth.key_value validation error, got %#v", diags)
+	}
+}
+
+func TestLoadBytes_ValidationDiagnostics(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		taskName string
+		field    string
+		severity Severity
+	}{
+		{
+			name: "config_task_concurrency",
+			yaml: `
+config:
+  task_concurrency: 0
+downloads:
+  one:
+    url: https://example.com/file.zip
+`,
+			field:    "config.task_concurrency",
+			severity: SeverityError,
+		},
+		{
+			name: "task_timeout",
+			yaml: `
+downloads:
+  one:
+    url: https://example.com/file.zip
+    timeout: -1
+`,
+			taskName: "one",
+			field:    "timeout",
+			severity: SeverityError,
+		},
+		{
+			name: "download_limit",
+			yaml: `
+downloads:
+  one:
+    url: https://example.com/file.zip
+    download_limit: -1
+`,
+			taskName: "one",
+			field:    "download_limit",
+			severity: SeverityError,
+		},
+		{
+			name: "selector_matches_limit",
+			yaml: `
+downloads:
+  one:
+    url: https://example.com/
+    selector: a
+    selector_matches_limit: -1
+`,
+			taskName: "one",
+			field:    "selector_matches_limit",
+			severity: SeverityError,
+		},
+		{
+			name: "max_depth",
+			yaml: `
+downloads:
+  one:
+    url: https://example.com/
+    selector: a
+    max_depth: 0
+`,
+			taskName: "one",
+			field:    "max_depth",
+			severity: SeverityError,
+		},
+		{
+			name: "max_depth_without_selector",
+			yaml: `
+downloads:
+  one:
+    url: https://example.com/file.zip
+    max_depth: 2
+`,
+			taskName: "one",
+			field:    "max_depth",
+			severity: SeverityWarning,
+		},
+		{
+			name: "deprecated_base_download_dir",
+			yaml: `
+downloads:
+  one:
+    url: https://example.com/file.zip
+    base_download_dir: downloads
+`,
+			taskName: "one",
+			field:    "base_download_dir",
+			severity: SeverityWarning,
+		},
+		{
+			name: "empty_allowed_domain",
+			yaml: `
+downloads:
+  one:
+    url: https://example.com/file.zip
+    security:
+      allowed_domains: [""]
+`,
+			taskName: "one",
+			field:    "security.allowed_domains",
+			severity: SeverityError,
+		},
+		{
+			name: "empty_allowed_file_type",
+			yaml: `
+downloads:
+  one:
+    url: https://example.com/file.zip
+    security:
+      allowed_file_types: [""]
+`,
+			taskName: "one",
+			field:    "security.allowed_file_types",
+			severity: SeverityError,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, diags, _ := LoadBytes([]byte(c.yaml))
+			if !hasDiagnostic(diags, c.severity, c.taskName, c.field) {
+				t.Fatalf("expected %s diagnostic for %q, got %#v", c.severity, c.field, diags)
+			}
+		})
 	}
 }
 
@@ -197,25 +344,6 @@ downloads:
 	}
 }
 
-func TestLoadBytes_TaskForceDownloadFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte(`
-config:
-  force_download: true
-downloads:
-  one:
-    url: https://example.com/file.zip
-    force_download: false
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.Downloads["one"].ForceDownload {
-		t.Fatal("expected task force_download=false to override global config force_download=true")
-	}
-}
-
 func TestLoadBytes_GlobalTreatWarningsAsErrorsInherited(t *testing.T) {
 	data := []byte(`
 config:
@@ -234,27 +362,47 @@ downloads:
 	}
 }
 
-func TestLoadBytes_TaskTreatWarningsAsErrorsFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte(`
+func TestLoadBytes_TaskOverridesGlobal(t *testing.T) {
+	cases := []struct {
+		name  string
+		yaml  string
+		check func(t *testing.T, task *DownloadTask)
+	}{
+		{
+			name: "force_download_false",
+			yaml: `
+config:
+  force_download: true
+downloads:
+  one:
+    url: https://example.com/file.zip
+    force_download: false
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if task.ForceDownload {
+					t.Fatal("expected task force_download=false to override global true")
+				}
+			},
+		},
+		{
+			name: "treat_warnings_as_errors_false",
+			yaml: `
 config:
   treat_warnings_as_errors: true
 downloads:
   one:
     url: https://example.com/file.zip
     treat_warnings_as_errors: false
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.Downloads["one"].TreatWarningsAsErrors {
-		t.Fatal("expected task treat_warnings_as_errors=false to override global true")
-	}
-}
-
-func TestLoadBytes_TaskSecurityFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte(`
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if task.TreatWarningsAsErrors {
+					t.Fatal("expected task treat_warnings_as_errors=false to override global true")
+				}
+			},
+		},
+		{
+			name: "allow_insecure_http_false",
+			yaml: `
 config:
   security:
     allow_insecure_http: true
@@ -263,19 +411,16 @@ downloads:
     url: http://example.com/file.zip
     security:
       allow_insecure_http: false
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.Downloads["one"].Security.AllowInsecureHTTP {
-		t.Fatal("expected task security.allow_insecure_http=false to override global true")
-	}
-}
-
-func TestLoadBytes_TaskStopAllTasksOnHTTPCodeEmptyOverridesGlobal(t *testing.T) {
-	data := []byte(`
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if task.Security.AllowInsecureHTTP {
+					t.Fatal("expected task security.allow_insecure_http=false to override global true")
+				}
+			},
+		},
+		{
+			name: "stop_all_on_http_code_empty",
+			yaml: `
 config:
   stop_all_tasks:
     on_http_code: [404]
@@ -284,38 +429,32 @@ downloads:
     url: https://example.com/file.zip
     stop_all_tasks:
       on_http_code: []
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if len(cfg.Downloads["one"].StopAllTasks.OnHTTPCode) != 0 {
-		t.Fatalf("expected stop_all_tasks.on_http_code override to empty, got %#v", cfg.Downloads["one"].StopAllTasks.OnHTTPCode)
-	}
-}
-
-func TestLoadBytes_TaskRetryFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte(`
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if len(task.StopAllTasks.OnHTTPCode) != 0 {
+					t.Fatalf("expected stop_all_tasks.on_http_code override to empty, got %#v", task.StopAllTasks.OnHTTPCode)
+				}
+			},
+		},
+		{
+			name: "retry_false",
+			yaml: `
 config:
   retry: true
 downloads:
   one:
     url: https://example.com/file.zip
     retry: false
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.Downloads["one"].Retry.Enabled {
-		t.Fatal("expected task retry=false to override global retry=true")
-	}
-}
-
-func TestLoadBytes_TaskOverrideIfExistsFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte(`
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if task.Retry.Enabled {
+					t.Fatal("expected task retry=false to override global true")
+				}
+			},
+		},
+		{
+			name: "override_if_exists_false",
+			yaml: `
 config:
   save:
     override_if_exists: true
@@ -324,19 +463,16 @@ downloads:
     url: https://example.com/file.zip
     save:
       override_if_exists: false
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.Downloads["one"].Save.OverrideIfExists {
-		t.Fatal("expected task save.override_if_exists=false to override global true")
-	}
-}
-
-func TestLoadBytes_TaskStopAllTasksOnRuntimeErrorFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte(`
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if task.Save.OverrideIfExists {
+					t.Fatal("expected task save.override_if_exists=false to override global true")
+				}
+			},
+		},
+		{
+			name: "stop_all_on_runtime_error_false",
+			yaml: `
 config:
   stop_all_tasks:
     on_runtime_error: true
@@ -345,38 +481,32 @@ downloads:
     url: https://example.com/file.zip
     stop_all_tasks:
       on_runtime_error: false
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.Downloads["one"].StopAllTasks.OnRuntimeError {
-		t.Fatal("expected task stop_all_tasks.on_runtime_error=false to override global true")
-	}
-}
-
-func TestLoadBytes_TaskDownloadLimitZeroOverridesGlobal(t *testing.T) {
-	data := []byte(`
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if task.StopAllTasks.OnRuntimeError {
+					t.Fatal("expected task stop_all_tasks.on_runtime_error=false to override global true")
+				}
+			},
+		},
+		{
+			name: "download_limit_zero",
+			yaml: `
 config:
   download_limit: 5
 downloads:
   one:
     url: https://example.com/file.zip
     download_limit: 0
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.Downloads["one"].DownloadLimit != 0 {
-		t.Fatalf("expected download_limit=0 override, got %d", cfg.Downloads["one"].DownloadLimit)
-	}
-}
-
-func TestLoadBytes_TaskFollowRedirectsFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte(`
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if task.DownloadLimit != 0 {
+					t.Fatalf("expected download_limit=0 override, got %d", task.DownloadLimit)
+				}
+			},
+		},
+		{
+			name: "follow_redirects_false",
+			yaml: `
 config:
   security:
     follow_redirects: true
@@ -385,22 +515,19 @@ downloads:
     url: https://example.com/file.zip
     security:
       follow_redirects: false
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if cfg.Downloads["one"].Security.FollowRedirects == nil {
-		t.Fatal("expected task security.follow_redirects to be set")
-	}
-	if *cfg.Downloads["one"].Security.FollowRedirects {
-		t.Fatal("expected task security.follow_redirects=false to override global true")
-	}
-}
-
-func TestLoadBytes_TaskSaveMetadataFalseOverridesGlobalTrue(t *testing.T) {
-	data := []byte(`
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if task.Security.FollowRedirects == nil {
+					t.Fatal("expected task security.follow_redirects to be set")
+				}
+				if *task.Security.FollowRedirects {
+					t.Fatal("expected task security.follow_redirects=false to override global true")
+				}
+			},
+		},
+		{
+			name: "save_metadata_false",
+			yaml: `
 config:
   save:
     save_metadata: true
@@ -409,14 +536,23 @@ downloads:
     url: https://example.com/file.zip
     save:
       save_metadata: false
-`)
-
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+`,
+			check: func(t *testing.T, task *DownloadTask) {
+				if task.Save.SaveMetadata {
+					t.Fatal("expected task save.save_metadata=false to override global true")
+				}
+			},
+		},
 	}
-	if cfg.Downloads["one"].Save.SaveMetadata {
-		t.Fatal("expected task save.save_metadata=false to override global true")
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, _, err := LoadBytes([]byte(c.yaml))
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			c.check(t, cfg.Downloads["one"])
+		})
 	}
 }
 
@@ -488,8 +624,12 @@ func hasWarning(diags []Diagnostic, taskName string, field string) bool {
 }
 
 func hasError(diags []Diagnostic, taskName string, field string) bool {
+	return hasDiagnostic(diags, SeverityError, taskName, field)
+}
+
+func hasDiagnostic(diags []Diagnostic, severity Severity, taskName string, field string) bool {
 	for _, d := range diags {
-		if d.Severity == SeverityError && d.TaskName == taskName && d.Field == field {
+		if d.Severity == severity && d.TaskName == taskName && d.Field == field {
 			return true
 		}
 	}

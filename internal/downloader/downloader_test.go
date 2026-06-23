@@ -255,6 +255,138 @@ func TestRunTask_SelectorFlow(t *testing.T) {
 	}
 }
 
+func TestRunTask_DownloadLimitTruncatesCandidates(t *testing.T) {
+	requested := map[string]int{}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested[r.URL.Path]++
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<a href="%s/first.pdf">First</a><a href="%s/second.pdf">Second</a>`, server.URL, server.URL)
+		case "/first.pdf", "/second.pdf":
+			w.Header().Set("Content-Type", "application/pdf")
+			fmt.Fprint(w, "pdf")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:           server.URL + "/",
+		Selector:      "a",
+		DownloadLimit: 1,
+		Save:          config.SaveConfig{BaseDownloadDir: t.TempDir()},
+		Security:      config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 2, DefaultAttrMapping: map[string]string{"a": "href"}})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if len(res.Saved) != 1 {
+		t.Fatalf("expected one saved file after download_limit, got %d", len(res.Saved))
+	}
+	if requested["/second.pdf"] != 0 {
+		t.Fatalf("expected second candidate not to be downloaded, got %d requests", requested["/second.pdf"])
+	}
+}
+
+func TestRunTask_SelectorMaxDepthCrawlsNestedPages(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<a href="%s/page-2">Next</a>`, server.URL)
+		case "/page-2":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<a href="%s/file.pdf">File</a>`, server.URL)
+		case "/file.pdf":
+			w.Header().Set("Content-Type", "application/pdf")
+			fmt.Fprint(w, "pdf")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:      server.URL + "/",
+		Selector: "a",
+		MaxDepth: 2,
+		Save:     config.SaveConfig{BaseDownloadDir: t.TempDir(), FilenameTemplate: "{{.URL}}"},
+		Security: config.SecurityConfig{AllowInsecureHTTP: true},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if len(res.Saved) != 2 {
+		t.Fatalf("expected links from both depths to be saved, got %d", len(res.Saved))
+	}
+	foundNestedFile := false
+	for _, saved := range res.Saved {
+		if strings.Contains(saved.SavedFileName, "file.pdf") {
+			foundNestedFile = true
+		}
+	}
+	if !foundNestedFile {
+		t.Fatalf("expected nested file to be included in saved results, got %#v", res.Saved)
+	}
+}
+
+func TestRunTask_AllowedFileTypesBlockURLBeforeFetch(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/octet-stream")
+		fmt.Fprint(w, "bin")
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:      server.URL + "/file.bin",
+		Save:     config.SaveConfig{BaseDownloadDir: t.TempDir()},
+		Security: config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected URL extension to be blocked")
+	}
+	if !strings.Contains(res.Errors[0].Error(), "URL extension blocked") {
+		t.Fatalf("expected extension block error, got %v", res.Errors[0])
+	}
+	if requests != 0 {
+		t.Fatalf("expected blocked URL extension to avoid fetch, got %d requests", requests)
+	}
+}
+
+func TestRunTask_AllowedFileTypesBlockResponseContentType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		fmt.Fprint(w, "not a pdf")
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:      server.URL + "/file.pdf",
+		Save:     config.SaveConfig{BaseDownloadDir: t.TempDir()},
+		Security: config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected response content-type to be blocked")
+	}
+	if !strings.Contains(res.Errors[0].Error(), "response content-type blocked") {
+		t.Fatalf("expected content-type block error, got %v", res.Errors[0])
+	}
+}
+
 type recordingProgress struct {
 	mu      sync.Mutex
 	started []string

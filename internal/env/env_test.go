@@ -3,6 +3,7 @@ package env
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -32,37 +33,84 @@ func TestLoadEnvFiles_FirstWins(t *testing.T) {
 }
 
 func TestExpandString(t *testing.T) {
-	got, missing := ExpandString("$A/$B/$C", map[string]string{"A": "x", "B": "y"})
-	if got != "x/y/$C" {
-		t.Fatalf("unexpected expansion: %s", got)
+	cases := []struct {
+		name        string
+		in          string
+		vars        map[string]string
+		want        string
+		wantMissing []string
+	}{
+		{
+			name:        "bare_vars_preserve_missing",
+			in:          "$A/$B/$C",
+			vars:        map[string]string{"A": "x", "B": "y"},
+			want:        "x/y/$C",
+			wantMissing: []string{"C"},
+		},
+		{
+			name:        "braced_vars",
+			in:          "${A}-bar/${B}",
+			vars:        map[string]string{"A": "x", "B": "y"},
+			want:        "x-bar/y",
+			wantMissing: []string{},
+		},
+		{
+			name:        "escaped_dollar",
+			in:          "price is $$5 for ${ITEM}",
+			vars:        map[string]string{"ITEM": "pen"},
+			want:        "price is $5 for pen",
+			wantMissing: []string{},
+		},
+		{
+			name:        "braced_missing_preserved",
+			in:          "${MISSING}",
+			vars:        map[string]string{},
+			want:        "${MISSING}",
+			wantMissing: []string{"MISSING"},
+		},
 	}
-	if len(missing) != 1 || missing[0] != "C" {
-		t.Fatalf("unexpected missing vars: %#v", missing)
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, missing := ExpandString(c.in, c.vars)
+			if got != c.want {
+				t.Fatalf("unexpected expansion: got %q, want %q", got, c.want)
+			}
+			if !reflect.DeepEqual(missing, c.wantMissing) {
+				t.Fatalf("unexpected missing vars: got %#v, want %#v", missing, c.wantMissing)
+			}
+		})
 	}
 }
 
-func TestExpandString_BracedAndEscaped(t *testing.T) {
-	got, missing := ExpandString("${A}-bar/${B}", map[string]string{"A": "x", "B": "y"})
-	if got != "x-bar/y" {
-		t.Fatalf("unexpected braced expansion: %q", got)
-	}
-	if len(missing) != 0 {
-		t.Fatalf("unexpected missing vars: %#v", missing)
+func TestParseDotEnvFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	data := `
+# comment
+export EXPORTED=from-export
+SPACED = value with spaces
+SINGLE='quoted single'
+DOUBLE="quoted double"
+EMPTY=
+malformed
+=ignored
+`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	got, missing = ExpandString("price is $$5 for ${ITEM}", map[string]string{"ITEM": "pen"})
-	if got != "price is $5 for pen" {
-		t.Fatalf("unexpected escaped expansion: %q", got)
+	got, err := ParseDotEnvFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(missing) != 0 {
-		t.Fatalf("unexpected missing vars: %#v", missing)
+	want := map[string]string{
+		"EXPORTED": "from-export",
+		"SPACED":   "value with spaces",
+		"SINGLE":   "quoted single",
+		"DOUBLE":   "quoted double",
+		"EMPTY":    "",
 	}
-
-	got, missing = ExpandString("${MISSING}", map[string]string{})
-	if got != "${MISSING}" {
-		t.Fatalf("expected unresolved braced token to be preserved, got %q", got)
-	}
-	if len(missing) != 1 || missing[0] != "MISSING" {
-		t.Fatalf("unexpected missing vars: %#v", missing)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected env vars: got %#v, want %#v", got, want)
 	}
 }

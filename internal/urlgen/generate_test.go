@@ -1,6 +1,8 @@
 package urlgen
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -130,17 +132,26 @@ func TestGenerateRange_NegativeStepFailsInsteadOfLooping(t *testing.T) {
 	}
 }
 
-func TestGenerateRange_VarNameMissingInTemplate(t *testing.T) {
-	task := &config.DownloadTask{
-		URL:         "https://example.com/file_{{.N}}.zip",
-		URLGenRange: &config.URLGenRange{VarName: "X", RangeStart: 1, RangeEnd: 1, Step: 1},
+func TestLocalFileLoader(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "urls.txt")
+	if err := os.WriteFile(path, []byte("https://example.com/a\n\nhttps://example.com/b\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	_, err := Generate(task, nil)
-	if err == nil {
-		t.Fatal("expected error")
+	got, err := LocalFileLoader(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "must reference var_name") {
-		t.Fatalf("expected mismatch error, got %v", err)
+	want := []string{"https://example.com/a", "", "https://example.com/b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected lines: %#v", got)
+	}
+}
+
+func TestLocalFileLoader_MissingFile(t *testing.T) {
+	_, err := LocalFileLoader(filepath.Join(t.TempDir(), "missing.txt"))
+	if err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }

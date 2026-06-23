@@ -80,11 +80,20 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	_ = run([]string{"-config", cfg}, &out, &errOut)
+	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
 
 	stdout := out.String()
 	if !strings.Contains(stdout, "task a_task") || !strings.Contains(stdout, "task z_task") {
 		t.Fatalf("expected both task lines in stdout, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "errors=2") {
+		t.Fatalf("expected summary to report both errors, got %q", stdout)
+	}
+	if !strings.Contains(errOut.String(), "[error] a_task") || !strings.Contains(errOut.String(), "[error] z_task") {
+		t.Fatalf("expected both task errors in stderr, got %q", errOut.String())
 	}
 }
 

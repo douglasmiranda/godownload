@@ -8,14 +8,11 @@ import (
 func TestRedactText_URLQuery(t *testing.T) {
 	in := "failed URL https://example.com/file.pdf?token=abc123&x=1"
 	out := RedactText(in)
-	if out == in {
-		t.Fatal("expected redaction")
-	}
 	if strings.Contains(out, "abc123") {
 		t.Fatalf("expected token to be redacted: %s", out)
 	}
-	if !strings.Contains(out, "token=%5BREDACTED%5D") && !strings.Contains(out, "token=[REDACTED]") {
-		t.Fatalf("expected token marker in output: %s", out)
+	if !strings.Contains(out, "token=%5BREDACTED%5D") {
+		t.Fatalf("expected encoded token marker in output: %s", out)
 	}
 }
 

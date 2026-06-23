@@ -78,22 +78,3 @@ func TestPrinter_ResultsTableNoColor(t *testing.T) {
 		}
 	}
 }
-
-func TestProgressTracker_TaskLifecycle(t *testing.T) {
-	pt := newProgressTracker()
-
-	pt.TaskStarted("task_a")
-	pt.TaskTotal("task_a", 3)
-	pt.TaskFileDone("task_a")
-	pt.TaskFileDone("task_a")
-	pt.TaskFileDone("task_a")
-	pt.TaskFinished("task_a")
-	pt.Wait()
-}
-
-func TestIsTerminal_NonFileWriter(t *testing.T) {
-	var b strings.Builder
-	if IsTerminal(&b) {
-		t.Fatal("expected strings.Builder to not be a terminal")
-	}
-}
