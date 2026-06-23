@@ -391,7 +391,7 @@ func (s *Service) doOnce(ctx context.Context, client *http.Client, task *config.
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		io.Copy(io.Discard, resp.Body)
-		return nil, "", resp.StatusCode, httpStatusError{Code: resp.StatusCode, Err: fmt.Errorf("HTTPError: request failed with status %d", resp.StatusCode)}
+		return nil, "", resp.StatusCode, httpStatusError{Code: resp.StatusCode, Err: httpStatusFailure(task, resp)}
 	}
 
 	contentType := resp.Header.Get("Content-Type")
@@ -465,11 +465,7 @@ func buildClient(task *config.DownloadTask) *http.Client {
 		Transport: transport,
 	}
 
-	followRedirects := true
-	if task.Security.FollowRedirects != nil {
-		followRedirects = *task.Security.FollowRedirects
-	}
-	if !followRedirects {
+	if !followRedirectsEnabled(task) {
 		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
@@ -574,6 +570,24 @@ func codeFromError(err error) int {
 		return 0
 	}
 	return hsErr.Code
+}
+
+func followRedirectsEnabled(task *config.DownloadTask) bool {
+	if task != nil && task.Security.FollowRedirects != nil {
+		return *task.Security.FollowRedirects
+	}
+	return true
+}
+
+func httpStatusFailure(task *config.DownloadTask, resp *http.Response) error {
+	if resp.StatusCode >= 300 && resp.StatusCode <= 399 && !followRedirectsEnabled(task) {
+		msg := fmt.Sprintf("URL returned HTTP redirect %d but security.follow_redirects is false", resp.StatusCode)
+		if loc := strings.TrimSpace(resp.Header.Get("Location")); loc != "" {
+			msg += fmt.Sprintf(" (Location: %s)", loc)
+		}
+		return fmt.Errorf("HTTPError: %s", msg)
+	}
+	return fmt.Errorf("HTTPError: request failed with status %d", resp.StatusCode)
 }
 
 type httpStatusError struct {

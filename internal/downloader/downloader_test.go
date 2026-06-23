@@ -16,6 +16,48 @@ import (
 	"github.com/douglasmiranda/godownload/internal/config"
 )
 
+func TestRunTask_FollowRedirectsDisabledReportsRedirectError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/redirect.json":
+			http.Redirect(w, r, "/final.json", http.StatusFound)
+		case "/final.json":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"ok":true}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	followRedirects := false
+	task := &config.DownloadTask{
+		URL:  server.URL + "/redirect.json",
+		Save: config.SaveConfig{BaseDownloadDir: dir},
+		Security: config.SecurityConfig{
+			AllowedFileTypes:  []string{"json"},
+			AllowInsecureHTTP: true,
+			FollowRedirects:   &followRedirects,
+		},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected error when URL redirects with follow_redirects disabled")
+	}
+	errMsg := res.Errors[0].Error()
+	if !strings.Contains(errMsg, "security.follow_redirects is false") {
+		t.Fatalf("expected follow_redirects error, got %v", res.Errors[0])
+	}
+	if !strings.Contains(errMsg, "302") {
+		t.Fatalf("expected redirect status in error, got %v", res.Errors[0])
+	}
+	if !strings.Contains(errMsg, "/final.json") {
+		t.Fatalf("expected redirect location in error, got %v", res.Errors[0])
+	}
+}
+
 func TestRunTask_DirectDownload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/file.pdf" {
