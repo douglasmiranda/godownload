@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -611,6 +613,111 @@ downloads:
 	}
 	if !hasWarning(diags, "one", "save.filename_template") {
 		t.Fatal("expected warning when task save.filename_template is explicitly set")
+	}
+}
+
+func TestLoadBytes_HooksGlobalDefaultsAndTaskOverrides(t *testing.T) {
+	data := []byte(`
+config:
+  hooks:
+    fail_task_if_error: true
+    timeout: 9
+    on_success:
+      command: echo global-success
+    on_failure:
+      command: echo global-failure
+    on_complete:
+      command: echo global-complete
+downloads:
+  one:
+    url: https://example.com/file.zip
+    hooks:
+      timeout: 2
+      on_success:
+        command: echo task-success
+      on_failure: null
+`)
+
+	cfg, _, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	hooks := cfg.Downloads["one"].Hooks
+	if !hooks.FailTaskIfError {
+		t.Fatal("expected fail_task_if_error to inherit from global hooks")
+	}
+	if hooks.Timeout != 2 {
+		t.Fatalf("expected task timeout override, got %d", hooks.Timeout)
+	}
+	if hooks.OnSuccess == nil || hooks.OnSuccess.Command != "echo task-success" {
+		t.Fatalf("expected task on_success override, got %#v", hooks.OnSuccess)
+	}
+	if hooks.OnFailure != nil {
+		t.Fatalf("expected explicit null to disable inherited on_failure, got %#v", hooks.OnFailure)
+	}
+	if hooks.OnComplete == nil || hooks.OnComplete.Command != "echo global-complete" {
+		t.Fatalf("expected inherited on_complete, got %#v", hooks.OnComplete)
+	}
+}
+
+func TestLoadBytes_HooksValidationDiagnostics(t *testing.T) {
+	data := []byte(`
+downloads:
+  one:
+    url: https://example.com/file.zip
+    hooks:
+      timeout: -1
+      on_success:
+        command: ""
+`)
+
+	_, diags, _ := LoadBytes(data)
+	if !hasError(diags, "one", "hooks.timeout") {
+		t.Fatalf("expected hooks.timeout validation error, got %#v", diags)
+	}
+	if !hasError(diags, "one", "hooks.on_success.command") {
+		t.Fatalf("expected hooks.on_success.command validation error, got %#v", diags)
+	}
+}
+
+func TestLoadFile_HooksExpandEnvAndSetRuntimeContext(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "download.yaml")
+	data := `
+env:
+  HOOK_MSG: from-root
+config:
+  env:
+    SHELL: /bin/sh
+downloads:
+  one:
+    url: https://example.com/file.zip
+    env:
+      HOOK_MSG: from-task
+    hooks:
+      on_complete:
+        command: echo $HOOK_MSG
+`
+	if err := os.WriteFile(cfgPath, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	task := cfg.Downloads["one"]
+	if task.Hooks.OnComplete == nil || task.Hooks.OnComplete.Command != "echo from-task" {
+		t.Fatalf("expected expanded task hook command, got %#v", task.Hooks.OnComplete)
+	}
+	if task.HookConfigDir != dir {
+		t.Fatalf("expected hook config dir %q, got %q", dir, task.HookConfigDir)
+	}
+	if task.HookEnv["HOOK_MSG"] != "from-task" {
+		t.Fatalf("expected task env to win, got %#v", task.HookEnv)
+	}
+	if task.HookEnv["SHELL"] != "/bin/sh" {
+		t.Fatalf("expected config env in hook env, got %#v", task.HookEnv)
 	}
 }
 

@@ -62,6 +62,16 @@ config:
     script: src
     iframe: src
 
+  # default hooks for all downloads (optional, can be overridden by individual download configs)
+  # hooks:
+  #   # default is false; when true, hook failures become task errors
+  #   fail_task_if_error: false
+  #   # default is 0; no timeout is applied unless this is greater than 0
+  #   timeout: 0
+  #   # commands run as "$SHELL -c <command>" from the config file directory
+  #   on_complete:
+  #     command: echo "download task completed"
+
 downloads:
   ###############################################
   # WAYS TO SPECIFY/FIND THE URL TO DOWNLOAD FROM
@@ -384,6 +394,28 @@ downloads:
       # options: header, query, cookie
       key_in: header
 
+  #######
+  # HOOKS
+  #######
+
+  # run shell commands after a task succeeds, fails, or completes
+  example_hooks:
+    url: https://httpbin.org/anything/hooks
+    save:
+      filename: hooks_success.json
+    hooks:
+      # default is false; when true, hook failures become task errors
+      fail_task_if_error: false
+      # default is 0; no timeout is applied unless this is greater than 0
+      timeout: 0
+      # commands run as "$SHELL -c <command>" from the config file directory
+      on_success:
+        command: echo "on_success hook executed"
+      on_failure:
+        command: echo "on_failure hook executed"
+      on_complete:
+        command: echo "on_complete hook executed"
+
   ##########
   # METADATA
   ##########
@@ -397,11 +429,6 @@ downloads:
   #   "timestamp": "{{.TIMESTAMP}}",
   #   "size": "{{.SIZE}}",
   #   "mime_type": "{{.MIME_TYPE}}",
-  #   "extracted_metadata": {
-  #     "title": "{{.EXTRACTED.title}}",
-  #     "author": "{{.EXTRACTED.author}}",
-  #     ...
-  #   },
   #  "download_task_name": "{{.TASK_NAME}}",
   # }
 

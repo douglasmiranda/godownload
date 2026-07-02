@@ -44,6 +44,7 @@ Primary reference: DOWNLOAD.md in the root of the repository.
 - Use `retry: true` for defaults, or structured `retry` for explicit HTTP/runtime logic.
 - Use `stop_all_tasks.on_runtime_error` or `stop_all_tasks.on_http_code` for fail-fast workflows.
 - Use `treat_warnings_as_errors: true` for CI-sensitive tasks.
+- Use `hooks` for simple shell follow-up commands after task success, failure, or completion.
 
 5. Configure security/auth only when required.
 - Security controls: `allow_insecure_http`, `allow_self_signed_cert`, `allowed_domains`, `allowed_file_types`.
@@ -55,6 +56,7 @@ Primary reference: DOWNLOAD.md in the root of the repository.
 - Ensure `save.filename` is not used when multiple files can match.
 - Ensure selectors and filters can actually match expected elements.
 - Ensure retry/stop rules do not conflict with desired continuation behavior.
+- Ensure hook failures intentionally warn or fail the task via `hooks.fail_task_if_error`.
 - Ensure security policy allows the target URL and file type.
 
 ## Decision Hints

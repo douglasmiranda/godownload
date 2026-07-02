@@ -121,6 +121,7 @@ func applyDefaults(cfg *Config) {
 			task.Auth = mergeAuthDefaults(task, cfg.Config.Auth)
 		}
 		task.Security = mergeSecurityDefaults(task, cfg.Config.Security)
+		task.Hooks = mergeHooksDefaults(task, cfg.Config.Hooks)
 
 		if strings.TrimSpace(task.Save.BaseDownloadDir) == "" {
 			task.Save.BaseDownloadDir = cfg.Config.Save.BaseDownloadDir
@@ -223,6 +224,34 @@ func cloneAuth(in *AuthConfig) *AuthConfig {
 	}
 	out := *in
 	return &out
+}
+
+func cloneHookCommand(in *HookCommand) *HookCommand {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func mergeHooksDefaults(task *DownloadTask, defaults HooksConfig) HooksConfig {
+	out := task.Hooks
+	if !task.hasField("hooks.fail_task_if_error") {
+		out.FailTaskIfError = defaults.FailTaskIfError
+	}
+	if !task.hasField("hooks.timeout") {
+		out.Timeout = defaults.Timeout
+	}
+	if !task.hasField("hooks.on_complete") && out.OnComplete == nil {
+		out.OnComplete = cloneHookCommand(defaults.OnComplete)
+	}
+	if !task.hasField("hooks.on_success") && out.OnSuccess == nil {
+		out.OnSuccess = cloneHookCommand(defaults.OnSuccess)
+	}
+	if !task.hasField("hooks.on_failure") && out.OnFailure == nil {
+		out.OnFailure = cloneHookCommand(defaults.OnFailure)
+	}
+	return out
 }
 
 func mergeSecurityDefaults(task *DownloadTask, defaults SecurityConfig) SecurityConfig {

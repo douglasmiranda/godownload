@@ -122,6 +122,7 @@ All options below are optional. If set here, tasks inherit them unless task-leve
 | `env` | `map[string]string` | `{}` | Global task-default env vars. |
 | `auth` | `object` | none | Global authentication defaults. |
 | `security` | `object` | see section | Global security defaults. |
+| `hooks` | `object` | none | Global shell hook defaults inherited by tasks. |
 | `max_depth` | `int` | `1` | Selector crawl depth. Must be `>= 1`. |
 | `save.base_download_dir` | `string` | `.` | Base output directory. |
 | `save.filename_template` | `string` | `{{.ORIGINAL_FILENAME}}` | Used when `save.filename` is empty. |
@@ -418,6 +419,42 @@ downloads:
 
 See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-behavior).
 
+
+#### Task Hooks
+
+Hooks run after the final download outcome is known, outside the retry loop. A successful task runs `on_success`, a failed task runs `on_failure`, and `on_complete` runs after either outcome.
+
+Commands execute as `$SHELL -c "<command>"`; if `SHELL` is unset, `/bin/sh` is used. The working directory is the YAML config file directory. Commands inherit the process environment plus resolved config/task environment values, with task values taking precedence.
+
+| Option | Type | Default | Req. | Notes |
+|---|---|---|---|---|
+| `hooks.fail_task_if_error` | `bool` | `false` | No | When true, hook execution failure becomes a task error and can trigger `stop_all_tasks.on_runtime_error`. When false, hook failure is reported as a warning. |
+| `hooks.timeout` | `int` | `0` | No | Hook timeout in seconds. `0` means no timeout. Must be `>= 0`. |
+| `hooks.on_success.command` | `string` | none | Conditional | Shell command run only when the task succeeds. |
+| `hooks.on_failure.command` | `string` | none | Conditional | Shell command run only when the task fails. |
+| `hooks.on_complete.command` | `string` | none | Conditional | Shell command run after success or failure hooks. |
+
+Example:
+
+```yaml
+config:
+  env:
+    SHELL: /bin/sh
+
+downloads:
+  example_hooks:
+    url: https://example.com/file.zip
+    hooks:
+      fail_task_if_error: true
+      timeout: 30
+      on_success:
+        command: echo "download succeeded"
+      on_failure:
+        command: echo "download failed"
+      on_complete:
+        command: ./hooks/on_complete.sh
+```
+
 ### 5) Authentication and Security
 
 Use this when tasks need credentials and trust restrictions.
@@ -563,6 +600,9 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | `stop_all_tasks` during selector/discovery or URL generation | Matching stop conditions set abort-all the same as download-phase failures; remaining tasks are cancelled promptly. |
 | `treat_warnings_as_errors: true` + retry enabled + `on_runtime_error: true` | Warning-only failures are promoted and retried. |
 | `treat_warnings_as_errors: true` + `stop_all_tasks.on_runtime_error: true` | Promoted warning errors can set abort-all. |
+| Hook failure + `hooks.fail_task_if_error: false` | Hook failure is reported as a warning and may be promoted by `treat_warnings_as_errors`. |
+| Hook failure + `hooks.fail_task_if_error: true` | Hook failure becomes a task error and can trigger `stop_all_tasks.on_runtime_error`. |
+| Global `config.hooks.on_*` + task `hooks.on_*: null` | The task disables that inherited hook. |
 
 ### Save/Overwrite/Naming Interactions
 
@@ -614,6 +654,7 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | Invalid/missing auth fields for chosen `auth.type` | Error |
 | Invalid `auth.key_in` value | Error |
 | Empty item in `allowed_domains` or `allowed_file_types` | Error |
+| `hooks.timeout < 0` or configured hook with empty `command` | Error |
 | `save.filename` with selector or any `url_gen_*` | Error |
 | Top-level `base_download_dir` | Warning (deprecated) |
 | `save.filename_template` set together with `save.filename` | Warning (template ignored) |
@@ -626,6 +667,7 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | No generated seed URLs | Warning, task completes | Error |
 | Selector resolves zero candidate URLs | Warning, task completes | Error |
 | Existing file skipped (`force_download: false`) | Warning entry | Error |
+| Hook command fails while `hooks.fail_task_if_error: false` | Warning entry | Error |
 
 ## Metadata Output Schema
 
@@ -650,6 +692,7 @@ When `save.save_metadata: true`, a JSON file is written beside the downloaded fi
 | `retry` | Task `retry` merges with global retry defaults when both are enabled. |
 | `auth` | Task `auth` can inherit unset fields from global `auth`. |
 | `security` | Security fields inherit per-field from global defaults when task field is unset. |
+| `hooks` | Hook settings inherit per-field from `config.hooks`; task hook commands override inherited commands, and `null` disables an inherited command. |
 
 ## Option Coverage Checklist
 
@@ -682,6 +725,7 @@ All canonical option paths below are covered in this document.
 | `config.env` | [Global Default Task Options](#global-default-task-options) |
 | `config.auth` | [Global Default Task Options](#global-default-task-options) |
 | `config.security` | [Global Default Task Options](#global-default-task-options) |
+| `config.hooks.*` | [4) Reliability and Fail-fast](#4-reliability-and-fail-fast) |
 | `config.max_depth` | [Global Default Task Options](#global-default-task-options) |
 | `config.save.base_download_dir` | [Global Default Task Options](#global-default-task-options) |
 | `config.save.filename_template` | [Global Default Task Options](#global-default-task-options) |
@@ -709,6 +753,7 @@ All canonical option paths below are covered in this document.
 | `downloads.<name>.download_limit` | [4) Reliability and Fail-fast](#4-reliability-and-fail-fast) |
 | `downloads.<name>.selector_matches_limit` | [4) Reliability and Fail-fast](#4-reliability-and-fail-fast) |
 | `downloads.<name>.retry.*` | [4) Reliability and Fail-fast](#4-reliability-and-fail-fast) |
+| `downloads.<name>.hooks.*` | [4) Reliability and Fail-fast](#4-reliability-and-fail-fast) |
 | `downloads.<name>.env` | [Core Task Options](#core-task-options) and [Environment Variable Precedence](#environment-variable-precedence) |
 | `downloads.<name>.auth.*` | [5) Authentication and Security](#5-authentication-and-security) |
 | `downloads.<name>.security.*` | [5) Authentication and Security](#5-authentication-and-security) |

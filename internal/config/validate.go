@@ -112,6 +112,7 @@ func validateTask(name string, task *DownloadTask, globalFilenameTemplateSet boo
 	diags = append(diags, validateRetry(name, task.Retry)...)
 	diags = append(diags, validateAuth(name, task.Auth)...)
 	diags = append(diags, validateSecurity(name, task.Security)...)
+	diags = append(diags, validateHooks(name, task.Hooks)...)
 
 	return diags
 }
@@ -345,6 +346,27 @@ func validateSecurity(taskName string, sec SecurityConfig) []Diagnostic {
 		}
 	}
 	return diags
+}
+
+func validateHooks(taskName string, hooks HooksConfig) []Diagnostic {
+	diags := make([]Diagnostic, 0)
+	if hooks.Timeout < 0 {
+		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "hooks.timeout", Message: "must be greater than or equal to 0"})
+	}
+	diags = append(diags, validateHookCommand(taskName, "hooks.on_complete.command", hooks.OnComplete)...)
+	diags = append(diags, validateHookCommand(taskName, "hooks.on_success.command", hooks.OnSuccess)...)
+	diags = append(diags, validateHookCommand(taskName, "hooks.on_failure.command", hooks.OnFailure)...)
+	return diags
+}
+
+func validateHookCommand(taskName string, field string, hook *HookCommand) []Diagnostic {
+	if hook == nil {
+		return nil
+	}
+	if strings.TrimSpace(hook.Command) == "" {
+		return []Diagnostic{{Severity: SeverityError, TaskName: taskName, Field: field, Message: "is required"}}
+	}
+	return nil
 }
 
 func taskCanResolveMultipleURLs(task *DownloadTask) bool {

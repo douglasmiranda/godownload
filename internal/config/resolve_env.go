@@ -48,6 +48,7 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 		expandField("config.auth.key_name", &cfg.Config.Auth.KeyName, globalVars, "", &diags)
 		expandField("config.auth.key_value", &cfg.Config.Auth.KeyValue, globalVars, "", &diags)
 	}
+	expandHookCommands("config.hooks", &cfg.Config.Hooks, globalVars, "", &diags)
 
 	for name, task := range cfg.Downloads {
 		if task == nil {
@@ -55,6 +56,8 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 		}
 
 		taskVars := gdEnv.MergeWithPrecedence(globalVars, cfg.Config.Env, task.Env)
+		task.HookConfigDir = configDir
+		task.HookEnv = copyStringMap(taskVars)
 		expandField("url", &task.URL, taskVars, name, &diags)
 		expandField("selector", &task.Selector, taskVars, name, &diags)
 		expandField("attr", &task.Attr, taskVars, name, &diags)
@@ -81,6 +84,7 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 			expandField("auth.key_name", &task.Auth.KeyName, taskVars, name, &diags)
 			expandField("auth.key_value", &task.Auth.KeyValue, taskVars, name, &diags)
 		}
+		expandHookCommands("hooks", &task.Hooks, taskVars, name, &diags)
 
 		if task.URLGenFile != nil && task.URLGenFile.File != "" {
 			task.URLGenFile.File = toAbsoluteOrURL(task.URLGenFile.File, configDir)
@@ -105,6 +109,32 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 	}
 
 	return diags, nil
+}
+
+func expandHookCommands(prefix string, hooks *HooksConfig, vars map[string]string, taskName string, diags *[]Diagnostic) {
+	if hooks == nil {
+		return
+	}
+	if hooks.OnComplete != nil {
+		expandField(prefix+".on_complete.command", &hooks.OnComplete.Command, vars, taskName, diags)
+	}
+	if hooks.OnSuccess != nil {
+		expandField(prefix+".on_success.command", &hooks.OnSuccess.Command, vars, taskName, diags)
+	}
+	if hooks.OnFailure != nil {
+		expandField(prefix+".on_failure.command", &hooks.OnFailure.Command, vars, taskName, diags)
+	}
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func toAbsoluteOrURL(v string, baseDir string) string {

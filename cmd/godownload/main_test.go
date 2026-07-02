@@ -347,3 +347,99 @@ downloads:
 		t.Fatalf("expected errors count in summary, got %q", out.String())
 	}
 }
+
+func TestRun_HookFailureSetsExitCodeAndReportError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "download.yaml")
+	reportPath := filepath.Join(dir, "report.json")
+	yml := `
+config:
+  env:
+    SHELL: /bin/sh
+downloads:
+  hook_fail:
+    url: ` + server.URL + `/file.txt
+    security:
+      allow_insecure_http: true
+    save:
+      base_download_dir: ` + filepath.Join(dir, "downloads") + `
+    hooks:
+      fail_task_if_error: true
+      on_success:
+        command: echo hook-boom; exit 6
+`
+	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	var errOut strings.Builder
+	exitCode := run([]string{"-config", cfg, "-report-file", reportPath}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d stdout=%s stderr=%s", exitCode, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "hook-boom") {
+		t.Fatalf("expected hook output in stderr, got %q", errOut.String())
+	}
+
+	b, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("expected report file: %v", err)
+	}
+	var rr runReport
+	if err := json.Unmarshal(b, &rr); err != nil {
+		t.Fatalf("expected valid report json: %v", err)
+	}
+	if rr.ErrorTotal != 1 || len(rr.Tasks) != 1 || len(rr.Tasks[0].Errors) != 1 {
+		t.Fatalf("expected hook failure in report errors, got %+v", rr)
+	}
+}
+
+func TestRun_HookWarningPromotedByTreatWarningsAsErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "download.yaml")
+	yml := `
+config:
+  env:
+    SHELL: /bin/sh
+downloads:
+  hook_warn:
+    url: ` + server.URL + `/file.txt
+    security:
+      allow_insecure_http: true
+    save:
+      base_download_dir: ` + filepath.Join(dir, "downloads") + `
+    treat_warnings_as_errors: true
+    hooks:
+      on_success:
+        command: echo hook-warning; exit 3
+`
+	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	var errOut strings.Builder
+	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d stdout=%s stderr=%s", exitCode, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "warning treated as error") || !strings.Contains(errOut.String(), "hook-warning") {
+		t.Fatalf("expected promoted hook warning in stderr, got %q", errOut.String())
+	}
+	if !strings.Contains(out.String(), "warnings=0") {
+		t.Fatalf("expected warning to be promoted out of warning count, got %q", out.String())
+	}
+}

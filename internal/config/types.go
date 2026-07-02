@@ -46,6 +46,7 @@ type WorkerConfig struct {
 	Env                         map[string]string `yaml:"env"`
 	Auth                        *AuthConfig       `yaml:"auth"`
 	Security                    SecurityConfig    `yaml:"security"`
+	Hooks                       HooksConfig       `yaml:"hooks"`
 	MaxDepth                    int               `yaml:"max_depth"`
 	setFields                   map[string]bool   `yaml:"-"`
 }
@@ -91,7 +92,10 @@ type DownloadTask struct {
 	Env                         map[string]string `yaml:"env"`
 	Auth                        *AuthConfig       `yaml:"auth"`
 	Security                    SecurityConfig    `yaml:"security"`
+	Hooks                       HooksConfig       `yaml:"hooks"`
 	MaxDepth                    int               `yaml:"max_depth"`
+	HookConfigDir               string            `yaml:"-"`
+	HookEnv                     map[string]string `yaml:"-"`
 	setFields                   map[string]bool   `yaml:"-"`
 }
 
@@ -189,6 +193,18 @@ type RetryConfig struct {
 type StopAllTasks struct {
 	OnRuntimeError bool  `yaml:"on_runtime_error"`
 	OnHTTPCode     []int `yaml:"on_http_code"`
+}
+
+type HooksConfig struct {
+	FailTaskIfError bool         `yaml:"fail_task_if_error"`
+	Timeout         int          `yaml:"timeout"`
+	OnComplete      *HookCommand `yaml:"on_complete"`
+	OnSuccess       *HookCommand `yaml:"on_success"`
+	OnFailure       *HookCommand `yaml:"on_failure"`
+}
+
+type HookCommand struct {
+	Command string `yaml:"command"`
 }
 
 func (r *Retry) UnmarshalYAML(value *yaml.Node) error {

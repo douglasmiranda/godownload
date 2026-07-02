@@ -16,6 +16,7 @@ import (
 
 	"github.com/douglasmiranda/godownload/internal/config"
 	"github.com/douglasmiranda/godownload/internal/discovery"
+	"github.com/douglasmiranda/godownload/internal/hooks"
 	"github.com/douglasmiranda/godownload/internal/security"
 	"github.com/douglasmiranda/godownload/internal/storage"
 	"github.com/douglasmiranda/godownload/internal/urlgen"
@@ -31,6 +32,10 @@ type TaskProgress interface {
 	TaskFinished(name string)
 }
 
+type HookRunner interface {
+	Run(ctx context.Context, name string, command string, timeoutSeconds int) hooks.Result
+}
+
 type TaskResult struct {
 	TaskName string
 	Saved    []storage.SaveResult
@@ -44,6 +49,7 @@ type Service struct {
 	FileLoader   URLFileLoader
 	OnAbortAll   func()
 	TaskProgress TaskProgress
+	HookRunner   HookRunner
 }
 
 func (s *Service) RunTask(ctx context.Context, taskName string, task *config.DownloadTask, workerCfg config.WorkerConfig) TaskResult {
@@ -72,7 +78,7 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 		last = result
 
 		if len(result.Errors) == 0 {
-			return result
+			return s.finalizeWithHooks(taskName, task, result)
 		}
 
 		if shouldRetryPromotedWarnings(task, result, attempt, attempts) {
@@ -82,7 +88,7 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 			case <-ctx.Done():
 				t.Stop()
 				result.Errors = append(result.Errors, ctx.Err())
-				return result
+				return s.finalizeWithHooks(taskName, task, result)
 			case <-t.C:
 			}
 			continue
@@ -91,13 +97,13 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 		if hasOnlyPromotedWarningErrors(result.Errors) {
 			s.markAbortAll(task, &result, result.Errors[0])
 		}
-		return result
+		return s.finalizeWithHooks(taskName, task, result)
 	}
 
 	if hasOnlyPromotedWarningErrors(last.Errors) {
 		s.markAbortAll(task, &last, last.Errors[0])
 	}
-	return last
+	return s.finalizeWithHooks(taskName, task, last)
 }
 
 func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config.DownloadTask, workerCfg config.WorkerConfig) TaskResult {
@@ -210,6 +216,72 @@ func finalizeTaskResult(task *config.DownloadTask, result TaskResult) TaskResult
 	result.Warnings = nil
 
 	return result
+}
+
+func (s *Service) finalizeWithHooks(taskName string, task *config.DownloadTask, result TaskResult) TaskResult {
+	if task == nil || !hasHooks(task.Hooks) {
+		return result
+	}
+
+	wasSuccessful := len(result.Errors) == 0
+	runner := s.HookRunner
+	if runner == nil {
+		runner = hooks.Runner{Env: task.HookEnv, WorkDir: task.HookConfigDir}
+	}
+
+	initialErrorCount := len(result.Errors)
+	for _, hook := range selectedHooks(task.Hooks, wasSuccessful) {
+		if hook.command == nil {
+			continue
+		}
+		hookResult := runner.Run(context.Background(), hook.name, hook.command.Command, task.Hooks.Timeout)
+		if hookResult.Err == nil {
+			continue
+		}
+		msg := formatHookFailure(taskName, hookResult)
+		if task.Hooks.FailTaskIfError {
+			err := errors.New(msg)
+			result.Errors = append(result.Errors, err)
+			s.markAbortAll(task, &result, err)
+			continue
+		}
+		result.Warnings = append(result.Warnings, msg)
+	}
+
+	warningsBeforePromotion := len(result.Warnings)
+	result = finalizeTaskResult(task, result)
+	if len(result.Errors) > initialErrorCount && warningsBeforePromotion > 0 {
+		s.markAbortAll(task, &result, result.Errors[len(result.Errors)-1])
+	}
+	return result
+}
+
+type hookSelection struct {
+	name    string
+	command *config.HookCommand
+}
+
+func selectedHooks(hooksCfg config.HooksConfig, wasSuccessful bool) []hookSelection {
+	out := make([]hookSelection, 0, 2)
+	if wasSuccessful {
+		out = append(out, hookSelection{name: "on_success", command: hooksCfg.OnSuccess})
+	} else {
+		out = append(out, hookSelection{name: "on_failure", command: hooksCfg.OnFailure})
+	}
+	out = append(out, hookSelection{name: "on_complete", command: hooksCfg.OnComplete})
+	return out
+}
+
+func hasHooks(hooksCfg config.HooksConfig) bool {
+	return hooksCfg.OnComplete != nil || hooksCfg.OnSuccess != nil || hooksCfg.OnFailure != nil
+}
+
+func formatHookFailure(taskName string, result hooks.Result) string {
+	msg := result.Err.Error()
+	if result.Output != "" {
+		msg = fmt.Sprintf("%s: %s", msg, result.Output)
+	}
+	return fmt.Sprintf("task %s %s", taskName, msg)
 }
 
 func shouldRetryPromotedWarnings(task *config.DownloadTask, result TaskResult, attempt int, attempts int) bool {

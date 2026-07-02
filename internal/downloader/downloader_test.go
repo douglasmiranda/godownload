@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/douglasmiranda/godownload/internal/config"
+	"github.com/douglasmiranda/godownload/internal/hooks"
 )
 
 func TestRunTask_FollowRedirectsDisabledReportsRedirectError(t *testing.T) {
@@ -860,4 +862,138 @@ func TestRunTask_OnAbortAllCalledBeforeReturn(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for RunTask to return")
 	}
+}
+
+func TestRunTask_HooksRunSuccessThenComplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:      server.URL + "/file.txt",
+		Save:     config.SaveConfig{BaseDownloadDir: t.TempDir()},
+		Security: config.SecurityConfig{AllowInsecureHTTP: true},
+		Hooks: config.HooksConfig{
+			OnSuccess:  &config.HookCommand{Command: "success"},
+			OnFailure:  &config.HookCommand{Command: "failure"},
+			OnComplete: &config.HookCommand{Command: "complete"},
+		},
+	}
+	runner := &recordingHookRunner{}
+
+	res := (&Service{HookRunner: runner}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if got := strings.Join(runner.names, ","); got != "on_success,on_complete" {
+		t.Fatalf("expected success then complete hooks, got %q", got)
+	}
+}
+
+func TestRunTask_HooksRunFailureThenComplete(t *testing.T) {
+	task := &config.DownloadTask{
+		URL:      "https://example.com/file.txt",
+		Security: config.SecurityConfig{AllowedDomains: []string{"blocked.test"}},
+		Hooks: config.HooksConfig{
+			OnSuccess:  &config.HookCommand{Command: "success"},
+			OnFailure:  &config.HookCommand{Command: "failure"},
+			OnComplete: &config.HookCommand{Command: "complete"},
+		},
+	}
+	runner := &recordingHookRunner{}
+
+	res := (&Service{HookRunner: runner}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected download error")
+	}
+	if got := strings.Join(runner.names, ","); got != "on_failure,on_complete" {
+		t.Fatalf("expected failure then complete hooks, got %q", got)
+	}
+}
+
+func TestRunTask_HookFailureCanWarnOrFailTask(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	makeTask := func(failTask bool) *config.DownloadTask {
+		return &config.DownloadTask{
+			URL:      server.URL + "/file.txt",
+			Save:     config.SaveConfig{BaseDownloadDir: t.TempDir()},
+			Security: config.SecurityConfig{AllowInsecureHTTP: true},
+			Hooks: config.HooksConfig{
+				FailTaskIfError: failTask,
+				OnSuccess:       &config.HookCommand{Command: "success"},
+			},
+		}
+	}
+
+	warnRes := (&Service{HookRunner: &recordingHookRunner{failNames: map[string]bool{"on_success": true}}}).RunTask(context.Background(), "task1", makeTask(false), config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(warnRes.Errors) > 0 {
+		t.Fatalf("expected hook failure warning only, got errors %v", warnRes.Errors)
+	}
+	if len(warnRes.Warnings) != 1 || !strings.Contains(warnRes.Warnings[0], "hook on_success failed") {
+		t.Fatalf("expected hook warning, got %#v", warnRes.Warnings)
+	}
+
+	failRes := (&Service{HookRunner: &recordingHookRunner{failNames: map[string]bool{"on_success": true}}}).RunTask(context.Background(), "task1", makeTask(true), config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(failRes.Errors) == 0 {
+		t.Fatal("expected hook failure to fail task")
+	}
+	if !strings.Contains(failRes.Errors[len(failRes.Errors)-1].Error(), "hook on_success failed") {
+		t.Fatalf("expected hook failure error, got %v", failRes.Errors)
+	}
+}
+
+func TestRunTask_HookWarningPromotionTriggersAbortAll(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:                   server.URL + "/file.txt",
+		Save:                  config.SaveConfig{BaseDownloadDir: t.TempDir()},
+		Security:              config.SecurityConfig{AllowInsecureHTTP: true},
+		TreatWarningsAsErrors: true,
+		StopAllTasks:          config.StopAllTasks{OnRuntimeError: true},
+		Hooks: config.HooksConfig{
+			OnSuccess: &config.HookCommand{Command: "success"},
+		},
+	}
+
+	var called atomic.Bool
+	res := (&Service{
+		HookRunner: &recordingHookRunner{failNames: map[string]bool{"on_success": true}},
+		OnAbortAll: func() {
+			called.Store(true)
+		},
+	}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+
+	if len(res.Errors) == 0 || len(res.Warnings) != 0 {
+		t.Fatalf("expected hook warning promoted to error, got warnings=%v errors=%v", res.Warnings, res.Errors)
+	}
+	if !res.AbortAll || !called.Load() {
+		t.Fatalf("expected promoted hook warning to trigger abort all: result=%+v called=%v", res, called.Load())
+	}
+}
+
+type recordingHookRunner struct {
+	names     []string
+	commands  []string
+	failNames map[string]bool
+}
+
+func (r *recordingHookRunner) Run(ctx context.Context, name string, command string, timeoutSeconds int) hooks.Result {
+	r.names = append(r.names, name)
+	r.commands = append(r.commands, command)
+	if r.failNames[name] {
+		return hooks.Result{Name: name, Command: command, ExitCode: 2, Output: "hook output", Err: errors.New("hook " + name + " failed")}
+	}
+	return hooks.Result{Name: name, Command: command}
 }
