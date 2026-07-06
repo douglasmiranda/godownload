@@ -112,9 +112,6 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 }
 
 func expandHookCommands(prefix string, hooks *HooksConfig, vars map[string]string, taskName string, diags *[]Diagnostic) {
-	if hooks == nil {
-		return
-	}
 	if hooks.OnComplete != nil {
 		expandField(prefix+".on_complete.command", &hooks.OnComplete.Command, vars, taskName, diags)
 	}

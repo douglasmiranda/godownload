@@ -422,9 +422,9 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 
 #### Task Hooks
 
-Hooks run after the final download outcome is known, outside the retry loop. A successful task runs `on_success`, a failed task runs `on_failure`, and `on_complete` runs after either outcome.
+Hooks run after the final download outcome is known, outside the retry loop. Success means the task has no errors after warning promotion; warning-only results still run `on_success` unless `treat_warnings_as_errors` promotes those warnings. A successful task runs `on_success`, a failed task runs `on_failure`, and `on_complete` runs after either outcome, even if the selected success/failure hook itself fails.
 
-Commands execute as `$SHELL -c "<command>"`; if `SHELL` is unset, `/bin/sh` is used. The working directory is the YAML config file directory. Commands inherit the process environment plus resolved config/task environment values, with task values taking precedence.
+Commands execute as `$SHELL -c "<command>"`; if `SHELL` is unset, `/bin/sh` is used. The working directory is the YAML config file directory. Commands inherit the process environment plus resolved config/task environment values, with task values taking precedence. Hooks use the task's run context, so cancellation can interrupt hook execution in addition to any configured hook timeout.
 
 | Option | Type | Default | Req. | Notes |
 |---|---|---|---|---|

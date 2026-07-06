@@ -983,15 +983,85 @@ func TestRunTask_HookWarningPromotionTriggersAbortAll(t *testing.T) {
 	}
 }
 
+func TestRunTask_HooksReceiveTaskContext(t *testing.T) {
+	task := &config.DownloadTask{
+		Hooks: config.HooksConfig{
+			OnSuccess: &config.HookCommand{Command: "success"},
+		},
+	}
+	runner := &recordingHookRunner{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res := (&Service{HookRunner: runner}).finalizeWithHooks(ctx, "task1", task, TaskResult{TaskName: "task1"})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if len(runner.contextErrs) != 1 || !errors.Is(runner.contextErrs[0], context.Canceled) {
+		t.Fatalf("expected hook to receive canceled task context, got %#v", runner.contextErrs)
+	}
+}
+
+func TestRunTask_OnCompleteRunsAfterFailingOutcomeHook(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "ok")
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:      server.URL + "/file.txt",
+		Save:     config.SaveConfig{BaseDownloadDir: t.TempDir()},
+		Security: config.SecurityConfig{AllowInsecureHTTP: true},
+		Hooks: config.HooksConfig{
+			FailTaskIfError: true,
+			OnSuccess:       &config.HookCommand{Command: "success"},
+			OnComplete:      &config.HookCommand{Command: "complete"},
+		},
+	}
+	runner := &recordingHookRunner{failNames: map[string]bool{"on_success": true}}
+
+	res := (&Service{HookRunner: runner}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected failing outcome hook to fail task")
+	}
+	if got := strings.Join(runner.names, ","); got != "on_success,on_complete" {
+		t.Fatalf("expected on_complete after failing outcome hook, got %q", got)
+	}
+}
+
+func TestRunTask_WarningOnlyResultRunsSuccessHook(t *testing.T) {
+	task := &config.DownloadTask{
+		Hooks: config.HooksConfig{
+			OnSuccess: &config.HookCommand{Command: "success"},
+			OnFailure: &config.HookCommand{Command: "failure"},
+		},
+	}
+	runner := &recordingHookRunner{}
+
+	res := (&Service{HookRunner: runner}).finalizeWithHooks(context.Background(), "task1", task, TaskResult{
+		TaskName: "task1",
+		Warnings: []string{"file already exists; skipped"},
+	})
+	if len(res.Errors) > 0 || len(res.Warnings) == 0 {
+		t.Fatalf("expected warning-only task result, got warnings=%v errors=%v", res.Warnings, res.Errors)
+	}
+	if got := strings.Join(runner.names, ","); got != "on_success" {
+		t.Fatalf("expected warning-only result to run on_success, got %q", got)
+	}
+}
+
 type recordingHookRunner struct {
-	names     []string
-	commands  []string
-	failNames map[string]bool
+	names       []string
+	commands    []string
+	contextErrs []error
+	failNames   map[string]bool
 }
 
 func (r *recordingHookRunner) Run(ctx context.Context, name string, command string, timeoutSeconds int) hooks.Result {
 	r.names = append(r.names, name)
 	r.commands = append(r.commands, command)
+	r.contextErrs = append(r.contextErrs, ctx.Err())
 	if r.failNames[name] {
 		return hooks.Result{Name: name, Command: command, ExitCode: 2, Output: "hook output", Err: errors.New("hook " + name + " failed")}
 	}

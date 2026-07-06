@@ -721,6 +721,42 @@ downloads:
 	}
 }
 
+func TestLoadBytes_HooksExpandEnvAndSetRuntimeContext(t *testing.T) {
+	data := []byte(`
+env:
+  HOOK_MSG: from-root
+config:
+  env:
+    SHELL: /bin/sh
+downloads:
+  one:
+    url: https://example.com/file.zip
+    env:
+      HOOK_MSG: from-task
+    hooks:
+      on_complete:
+        command: echo $HOOK_MSG
+`)
+
+	cfg, _, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	task := cfg.Downloads["one"]
+	if task.Hooks.OnComplete == nil || task.Hooks.OnComplete.Command != "echo from-task" {
+		t.Fatalf("expected expanded task hook command, got %#v", task.Hooks.OnComplete)
+	}
+	if task.HookConfigDir != "." {
+		t.Fatalf("expected hook config dir %q, got %q", ".", task.HookConfigDir)
+	}
+	if task.HookEnv["HOOK_MSG"] != "from-task" {
+		t.Fatalf("expected task env to win, got %#v", task.HookEnv)
+	}
+	if task.HookEnv["SHELL"] != "/bin/sh" {
+		t.Fatalf("expected config env in hook env, got %#v", task.HookEnv)
+	}
+}
+
 func hasWarning(diags []Diagnostic, taskName string, field string) bool {
 	for _, d := range diags {
 		if d.Severity == SeverityWarning && d.TaskName == taskName && d.Field == field {

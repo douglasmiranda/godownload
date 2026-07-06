@@ -14,15 +14,22 @@ func LoadFile(path string) (*Config, []Diagnostic, error) {
 		return nil, nil, fmt.Errorf("read config file: %w", err)
 	}
 
+	return loadConfig(b, filepath.Dir(path))
+}
+
+func LoadBytes(data []byte) (*Config, []Diagnostic, error) {
+	return loadConfig(data, ".")
+}
+
+func loadConfig(data []byte, configDir string) (*Config, []Diagnostic, error) {
 	// Parse and apply defaults, but defer validation until after environment
 	// resolution so values like "$VAR" are validated in their resolved form
 	// (and validation runs exactly once).
-	cfg, err := parseConfig(b)
+	cfg, err := parseConfig(data)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	configDir := filepath.Dir(path)
 	diags, err := resolveEnvAndExpand(cfg, configDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve environment variables: %w", err)
@@ -35,21 +42,6 @@ func LoadFile(path string) (*Config, []Diagnostic, error) {
 		}
 	}
 
-	return cfg, diags, nil
-}
-
-func LoadBytes(data []byte) (*Config, []Diagnostic, error) {
-	cfg, err := parseConfig(data)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	diags := Validate(cfg)
-	for _, d := range diags {
-		if d.Severity == SeverityError {
-			return cfg, diags, ValidationError{Diagnostics: diags}
-		}
-	}
 	return cfg, diags, nil
 }
 

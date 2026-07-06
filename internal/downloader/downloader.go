@@ -78,7 +78,7 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 		last = result
 
 		if len(result.Errors) == 0 {
-			return s.finalizeWithHooks(taskName, task, result)
+			return s.finalizeWithHooks(ctx, taskName, task, result)
 		}
 
 		if shouldRetryPromotedWarnings(task, result, attempt, attempts) {
@@ -88,7 +88,7 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 			case <-ctx.Done():
 				t.Stop()
 				result.Errors = append(result.Errors, ctx.Err())
-				return s.finalizeWithHooks(taskName, task, result)
+				return s.finalizeWithHooks(ctx, taskName, task, result)
 			case <-t.C:
 			}
 			continue
@@ -97,13 +97,13 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 		if hasOnlyPromotedWarningErrors(result.Errors) {
 			s.markAbortAll(task, &result, result.Errors[0])
 		}
-		return s.finalizeWithHooks(taskName, task, result)
+		return s.finalizeWithHooks(ctx, taskName, task, result)
 	}
 
 	if hasOnlyPromotedWarningErrors(last.Errors) {
 		s.markAbortAll(task, &last, last.Errors[0])
 	}
-	return s.finalizeWithHooks(taskName, task, last)
+	return s.finalizeWithHooks(ctx, taskName, task, last)
 }
 
 func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config.DownloadTask, workerCfg config.WorkerConfig) TaskResult {
@@ -218,7 +218,7 @@ func finalizeTaskResult(task *config.DownloadTask, result TaskResult) TaskResult
 	return result
 }
 
-func (s *Service) finalizeWithHooks(taskName string, task *config.DownloadTask, result TaskResult) TaskResult {
+func (s *Service) finalizeWithHooks(ctx context.Context, taskName string, task *config.DownloadTask, result TaskResult) TaskResult {
 	if task == nil || !hasHooks(task.Hooks) {
 		return result
 	}
@@ -234,7 +234,7 @@ func (s *Service) finalizeWithHooks(taskName string, task *config.DownloadTask, 
 		if hook.command == nil {
 			continue
 		}
-		hookResult := runner.Run(context.Background(), hook.name, hook.command.Command, task.Hooks.Timeout)
+		hookResult := runner.Run(ctx, hook.name, hook.command.Command, task.Hooks.Timeout)
 		if hookResult.Err == nil {
 			continue
 		}
