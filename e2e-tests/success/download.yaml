@@ -1,0 +1,520 @@
+config:
+  # log_level: DEBUG
+  # task_concurrency: 3
+  # downloads_per_task_concurrency: 3
+  treat_warnings_as_errors: true
+  stop_all_tasks:
+    on_runtime_error: true
+  save:
+    base_download_dir: ./d-files
+  security:
+      allow_insecure_http: true
+  hooks:
+    # default is: false
+    # this will propagate the error making the task fail
+    # so it works with stop_all_tasks: on_runtime_error: true
+    fail_task_if_error: true
+    timeout: 5
+  env:
+    HTTPBIN_URL: "http://localhost:18080"
+
+downloads:
+  simple_download:
+    url: $HTTPBIN_URL/robots.txt
+    hooks:
+      on_success:
+        command: test -f ./d-files/robots.txt
+
+  # save with a custom filename so it doesn't generate warning:
+  download_and_rename:
+    url: $HTTPBIN_URL/robots.txt
+    save:
+      filename: "robots2.txt"
+    hooks:
+      on_success:
+        command: test -f ./d-files/robots2.txt
+
+  # save with a custom filename (using template) so it doesn't generate warning:
+  download_and_rename_with_template:
+    url: $HTTPBIN_URL/robots.txt
+    save:
+      # - {{.ORIGINAL_FILENAME}}: the original filename from the URL (e.g. file.zip)
+      # - {{.URL}}: the full URL of the file being downloaded, sanitized for filesystem-safe filenames (e.g. https_example.com_file.zip)
+      # - {{.DOMAIN}}: the URL hostname/domain of the file being downloaded (e.g. example.com)
+      # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
+      # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
+      # - {{.TIME}}: the time of the download (e.g. 12-00-00)
+      # - {{.UUID}}: a unique identifier for the download (e.g. 550e8400-e29b-41d4-a716-446655440000)
+      # Let's use all of them in the filename:
+      filename_template: "download_and_rename_with_template_{{.DOMAIN}}_{{.DATE}}_{{.TIME}}_{{.TIMESTAMP}}_{{.UUID}}_{{.ORIGINAL_FILENAME}}_{{.URL}}"
+    hooks:
+      on_success:
+        command: find d-files/ -maxdepth 1 -type f -name "download_and_rename_with_template_*.txt" -print -quit | grep -q .
+  
+  # base64 encoded string
+  # PGEgaHJlZj0iL2Jhc2U2NC9TRlJVVUVKSlRpQnBjeUJoZDJWemIyMWwiPkhUVFBCSU4gaXMgYXdlc29tZTwvYT4=
+  # equivalent to:
+  # <a href="/base64/SFRUUEJJTiBpcyBhd2Vzb21l">HTTPBIN is awesome</a>
+  download_using_selector:
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2Jhc2U2NC9TRlJVVUVKSlRpQnBjeUJoZDJWemIyMWwiPkhUVFBCSU4gaXMgYXdlc29tZTwvYT4=
+    selector: "a"
+    hooks:
+      on_success:
+        command: test -f ./d-files/SFRUUEJJTiBpcyBhd2Vzb21l
+
+  # selector + regex_filter against anchor text
+  selector_with_regex_filter:
+    # The idea here is: as long as the regex filter does its job, we won't match
+    # the falty link that will certainly cause an error
+    # <a href="/anything/selector_with_regex_filter">this</a>
+    # <a href="/status/404">not this</a>
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2FueXRoaW5nL3NlbGVjdG9yX3dpdGhfcmVnZXhfZmlsdGVyIj50aGlzPC9hPjxhIGhyZWY9Ii9zdGF0dXMvNDA0Ij5ub3QgdGhpczwvYT4=
+    selector: "a"
+    regex_filter: "^this$"
+    hooks:
+      on_success:
+        command: test -f ./d-files/selector_with_regex_filter
+
+  # selector + attr_val_regex_filter against extracted href values
+  selector_with_attr_value_regex_filter:
+    # <a href="/image/png">img</a>
+    # <a href="/image/jpeg">img</a>
+    # <a href="/status/404">not this</a>
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2ltYWdlL3BuZyI+aW1nPC9hPjxhIGhyZWY9Ii9pbWFnZS9qcGVnIj5pbWc8L2E+PGEgaHJlZj0iL3N0YXR1cy80MDQiPm5vdCB0aGlzPC9hPg==
+    selector: "a"
+    attr_val_regex_filter: "/(png|jpeg)$"
+    save:
+      filename_template: "selector_attrval_{{.URL}}"
+    hooks:
+      on_success:
+        command: 
+          test -f ./d-files/selector_attrval_*_jpeg &&
+          test -f ./d-files/selector_attrval_*_png &&
+          test ! -f ./d-files/selector_attrval_*_404
+
+  # selector on non-default attribute mapping
+  selector_with_explicit_attr:
+    # <a data-url="/anything/custom-attr">Custom attr URL</a>
+    url: $HTTPBIN_URL/base64/PGEgZGF0YS11cmw9Ii9hbnl0aGluZy9jdXN0b20tYXR0ciI+Q3VzdG9tIGF0dHIgVVJMPC9hPg==
+    selector: "a"
+    attr: "data-url"
+    save:
+      filename_template: "selector_custom_attr_{{.URL}}.json"
+    hooks:
+      on_success:
+        command: test -f ./d-files/selector_custom_attr_*.json
+
+  # selector_matches_limit limits extraction before download phase
+  selector_with_matches_limit:
+    # The idea here is: as long as the selector_matches_limit does its job,
+    # we won't match the falty link that will certainly cause an error.
+    # <a href="/image/png">img</a>
+    # <a href="/status/404">not this</a>
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2ltYWdlL3BuZyI+aW1nPC9hPjxhIGhyZWY9Ii9zdGF0dXMvNDA0Ij5ub3QgdGhpczwvYT4=
+    selector: "a"
+    selector_matches_limit: 1
+    save:
+      filename_template: "selector_match_limit_{{.URL}}"
+    hooks:
+      on_success:
+        command: test -f ./d-files/selector_match_limit_*_png && test ! -f ./d-files/selector_match_limit_*_404
+
+  # download_limit truncates candidate URLs after discovery
+  selector_with_download_limit:
+    # The idea here is: as long as the download_limit does its job,
+    # we won't match the falty link that will certainly cause an error.
+    # <a href="/image/png">img</a>
+    # <a href="/status/404">not this</a>
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2ltYWdlL3BuZyI+aW1nPC9hPjxhIGhyZWY9Ii9zdGF0dXMvNDA0Ij5ub3QgdGhpczwvYT4=
+    selector: "a"
+    download_limit: 1
+    save:
+      filename_template: "selector_download_limit_{{.URL}}"
+    hooks:
+      on_success:
+        command: test -f ./d-files/selector_download_limit_*_png && test ! -f ./d-files/selector_download_limit_*_404
+
+  ################
+  # url generation
+  ################
+
+  # generate dynamic URLs based on a pattern and a range of values
+  dynamic_urls:
+    url: $HTTPBIN_URL/stream/{{.N}}
+    url_gen_range:
+      var_name: "N"
+      range_start: 1
+      range_end: 2
+      step: 1
+    hooks:
+      on_success:
+        command: test -f ./d-files/1 && test -f ./d-files/2
+
+  # range with non-default step
+  dynamic_urls_with_step:
+    url: $HTTPBIN_URL/anything/range-step-{{.N}}.json
+    url_gen_range:
+      var_name: "N"
+      range_start: 0
+      range_end: 4
+      step: 2
+    hooks:
+      on_success:
+        # expects: 0, 2, 4 files to exist, and 1, 3 files to not exist
+        command: >-
+          test -f ./d-files/range-step-0.json &&
+          test -f ./d-files/range-step-2.json &&
+          test -f ./d-files/range-step-4.json &&
+          test ! -f ./d-files/range-step-1.json &&
+          test ! -f ./d-files/range-step-3.json
+
+  # generate dynamic URLs based on a pattern and a list of values
+  dynamic_urls_list:
+    url: $HTTPBIN_URL/stream/{{.NAME}}
+    url_gen_list:
+      var_name: "NAME"
+      values: ["10", "11"]
+    hooks:
+      on_success:
+        command: test -f ./d-files/10 && test -f ./d-files/11
+
+  # query-only URL generation needs explicit filename template for uniqueness
+  dynamic_urls_list_query_safe_filename:
+    url: $HTTPBIN_URL/anything?item={{.ITEM}}
+    url_gen_list:
+      var_name: "ITEM"
+      values: ["A", "B", "C"]
+    save:
+      filename_template: "list_query_{{.URL}}.json"
+    hooks:
+      on_success:
+        command: 
+          test -f ./d-files/list_query_*_anything_item=A.json &&
+          test -f ./d-files/list_query_*_anything_item=B.json &&
+          test -f ./d-files/list_query_*_anything_item=C.json
+
+  # generate dynamic URLs based date range
+  # NOTE: since the default save.filename_template is "{{.ORIGINAL_FILENAME}}"
+  # we're safe from a warning here because the original filename will be
+  # "report-2026-01-01.json", "report-2026-01-02.json" and "report-2026-01-03.json" for each URL
+  dynamic_urls_date_range:
+    url: $HTTPBIN_URL/anything/report-{{.DATE}}.json
+    url_gen_dates:
+      var_name: DATE
+      date_range_start: "2026-01-01"
+      date_range_end: "2026-01-02"
+      date_format: YYYY-MM-DD
+    hooks:
+      on_success:
+        command: 
+          test -f ./d-files/report-2026-01-01.json &&
+          test -f ./d-files/report-2026-01-02.json
+
+  # generate dynamic URLs based on date range using MM/DD/YYYY format
+  dynamic_urls_date_range_mmddyyyy:
+    url: $HTTPBIN_URL/anything?date={{.DATE}}
+    url_gen_dates:
+      var_name: DATE
+      date_range_start: "01/01/2026"
+      date_range_end: "01/02/2026"
+      date_format: MM/DD/YYYY
+    save:
+      filename_template: "date_mmddyyyy_{{.URL}}.json"
+    hooks:
+      on_success:
+        command: 
+          test -f ./d-files/date_mmddyyyy_*_anything_date=01_01_2026.json &&
+          test -f ./d-files/date_mmddyyyy_*_anything_date=01_02_2026.json
+
+  # generate dynamic URLs based on a pattern obtained from a file
+  # in this case our file contains the full URLs already
+  dynamic_urls_list_from_file:
+    url: "$HTTPBIN_URL{{.URL}}"
+    url_gen_file:
+      var_name: URL
+      file: ./assets/urls.txt
+    hooks:
+      on_success:
+        command: 
+          test -f ./d-files/url_gen_file_example_file_1 &&
+          test -f ./d-files/url_gen_file_example_file_2
+    
+
+  # example with duplicated URLs in the file
+  # that + download_limit should ensure we do not hit the duplicate URL
+  # thus avoiding warnings or errors related to duplicate URLs
+  dynamic_urls_using_file_with_duplicated_urls:
+    url: "$HTTPBIN_URL{{.URL}}"
+    download_limit: 1
+    url_gen_file:
+      var_name: URL
+      file: ./assets/duplicated_urls.txt
+    hooks:
+      on_success:
+        command: 
+          test -f ./d-files/dup1
+
+  ######################
+  # File Save and Naming
+  ######################
+
+  # Using force_download on both because concurrency
+  force_download:
+    force_download: true
+    url: $HTTPBIN_URL/anything
+    hooks:
+      on_success:
+        command: test -f ./d-files/anything
+
+  # the one that downloads last will add _1 to the filename
+  force_download_auto_append_counter:
+    force_download: true
+    url: $HTTPBIN_URL/anything
+    hooks:
+      on_success:
+        command: test -f ./d-files/anything_1
+
+  save_with_extension_override:
+    url: $HTTPBIN_URL/image/png
+    save:
+      filename_template: "png_file_without_extension_{{.UUID}}"
+      extension: png
+    hooks:
+      on_success:
+        command: test -f ./d-files/png_file_without_extension_*.png
+
+  save_with_metadata_sidecar:
+    url: $HTTPBIN_URL/image/png
+    save:
+      filename: "image_with_metadata.png"
+      save_metadata: true
+    hooks:
+      on_success:
+        command:
+          test -f ./d-files/image_with_metadata.png &&
+          test -f ./d-files/image_with_metadata_metadata.json
+
+  # override_if_exists controls replace behavior when force_download is true.
+  force_download_with_override_if_exists:
+    url: "$HTTPBIN_URL{{.URL}}"
+    url_gen_file:
+      var_name: URL
+      file: ./assets/duplicated_urls.txt
+    force_download: true
+    save:
+      override_if_exists: true
+    hooks:
+      on_success:
+        command: test -f ./d-files/dup1
+
+  ######################
+  # Reliability and Limits
+  ######################
+
+  timeout_success:
+    url: $HTTPBIN_URL/delay/2
+    timeout: 3
+    save:
+      filename: "timeout_success.json"
+    hooks:
+      on_success:
+        command: test -f ./d-files/timeout_success.json
+
+  # this one is hard to test here
+  # so the goal is just to make sure that retry: true doesn't cause any issue
+  retry_defaults_success:
+    url: $HTTPBIN_URL/status/200
+    retry: true
+    save:
+      filename: "retry_defaults_success.json"
+    hooks:
+      on_success:
+        command: test -f ./d-files/retry_defaults_success.json
+
+  # this one is hard to test here
+  # so the goal is just to make sure that stop_all_tasks.on_runtime_error doesn't cause any issue
+  stop_all_configured_but_successful:
+    url: $HTTPBIN_URL/status/200
+    stop_all_tasks:
+      on_runtime_error: true
+    save:
+      filename: "stop_all_runtime_error_success.txt"
+    hooks:
+      on_success:
+        command: test -f ./d-files/stop_all_runtime_error_success.txt
+
+  ################
+  # Environment
+  ################
+
+  env_expansion_in_url:
+    url: $HTTPBIN_URL/anything?token=$TOKEN&source=env
+    env:
+      TOKEN: "from-task-env"
+    save:
+      filename_template: "env_expansion_{{.URL}}.json"
+    hooks:
+      on_success:
+        # env_expansion_http_localhost_18080_anything_token=from-task-env&source=env.json
+        command: test -f ./d-files/env_expansion_*_anything_token=from-task-env&source=env.json
+
+  ################
+  # Security
+  ################
+
+  allow_insecure_http_and_allowed_domains_enabled:
+    url: $HTTPBIN_URL/anything/test-insecure-http-allowed-domains.json
+    security:
+      # we already run these e2e tests with allow_insecure_http: true
+      # check config section at the top of the file
+      allow_insecure_http: true
+      allowed_domains: ["localhost"]
+    hooks:
+      on_success:
+        command: test -f ./d-files/test-insecure-http-allowed-domains.json
+
+  allowed_file_types_enabled:
+    url: $HTTPBIN_URL/anything/test-allowed-file-types.json
+    security:
+      allowed_file_types: ["json"]
+    hooks:
+      on_success:
+        command: test -f ./d-files/test-allowed-file-types.json
+  
+  # test allow redirects
+  # $HTTPBIN_URL/redirect-to?url=$HTTPBIN_URL/anything/properly-redirected&status_code=200
+  allow_redirects_enabled_default:
+    url: $HTTPBIN_URL/redirect-to?url=$HTTPBIN_URL/anything/properly-redirected
+    security:
+      # it's true by default
+      follow_redirects: true
+    hooks:
+      on_success:
+        # the filename does not become the redirected URL
+        command: test -f ./d-files/redirect-to
+
+  max_download_size_enabled:
+    url: $HTTPBIN_URL/robots.txt
+    # $HTTPBIN_URL/robots.txt has 30 bytes
+    security:
+      max_download_size: 30b # 30 bytes
+    save:
+      filename: "max_download_size_enabled_30b.txt"
+    hooks:
+      on_success:
+        command: test -f ./d-files/max_download_size_enabled_30b.txt
+  
+  allowed_domains_enabled:
+    url: $HTTPBIN_URL/anything/test-allowed-domains.json
+    security:
+      allowed_domains: ["localhost"]
+    hooks:
+      on_success:
+        command: test -f ./d-files/test-allowed-domains.json
+
+  # Requires the local self-signed server started by `make e2e-tests`
+  # (e2e-tests/support/selfsignedserver on port 18443).
+  allow_self_signed_cert_enabled:
+    url: https://127.0.0.1:18443/self-signed-test.txt
+    security:
+      allow_self_signed_cert: true
+    save:
+      filename: "allow_self_signed_cert_enabled.txt"
+    hooks:
+      on_success:
+        command: test -f ./d-files/allow_self_signed_cert_enabled.txt
+
+  ################
+  # Authentication
+  ################
+  basic_auth:
+    url: $HTTPBIN_URL/basic-auth/testuser/testpassword
+    auth:
+      type: basic
+      username: "testuser"
+      password: "testpassword"
+    save:
+      filename: "basic_auth_success.json"
+
+  bearer_token_auth:
+    url: $HTTPBIN_URL/bearer
+    auth:
+      type: bearer
+      token: "testtoken"
+    save:
+      filename: "bearer_token_auth_success.json"
+    hooks:
+      on_success:
+        command: jq -e '.authenticated == true' ./d-files/bearer_token_auth_success.json
+  
+  api_key_auth_header:
+    url: $HTTPBIN_URL/anything/api-key-header-test
+    auth:
+      type: api_key
+      # "Api" instead of "API" because of the RFC 9110.
+      # HTTP header names are case-insensitive (RFC 9110).
+      # Go normalizes them internally so lookups like req.Header.Get("x-api-key")
+      # and req.Header.Get("X-API-Key") hit the same entry.
+      key_name: X-Api-Key
+      key_value: test-api-key-123
+      key_in: header
+    save:
+      # {
+      #   ... 
+      #   "headers": {
+      #     ...
+      #     "X-Api-Key": "test-api-key-123"
+      #   }, 
+      #   ...
+      # }
+      filename: api_key_header_success.json
+    hooks:
+      on_success:
+        command: jq -e '.headers["X-Api-Key"][0] == "test-api-key-123"' ./d-files/api_key_header_success.json
+
+  api_key_auth_query:
+    url: $HTTPBIN_URL/anything/api-key-query-test
+    auth:
+      type: api_key
+      key_name: X-Api-Key
+      key_value: test-api-key-123
+      key_in: query
+    save:
+      # {
+      #   "args": {
+      #     "X-Api-Key": "test-api-key-123"
+      #   },
+      #   ...
+      filename: api_key_query_success.json
+    hooks:
+      on_success:
+        command: jq -e '.args["X-Api-Key"][0] == "test-api-key-123"' ./d-files/api_key_query_success.json
+
+  api_key_auth_cookie:
+    url: $HTTPBIN_URL/anything/api-key-cookie-test
+    auth:
+      type: api_key
+      key_name: X-Api-Key
+      key_value: test-api-key-123
+      key_in: cookie
+    save:
+      filename: api_key_cookie_success.json
+    hooks:
+      on_success:
+        command: jq -e '.headers["Cookie"][0] == "X-Api-Key=test-api-key-123"' ./d-files/api_key_cookie_success.json
+
+  #######
+  # Hooks
+  #######
+
+  # the prefix 1_ is just so it's put first in the list of downloads
+  1_hooks:
+    url: $HTTPBIN_URL/anything/hooks
+    save:
+      filename: hooks_success.json
+    hooks:
+      # runs regardless of success/failure
+      on_complete:
+        command: exit 0
+      on_success:
+        command: grep /anything/hooks ./d-files/hooks_success.json

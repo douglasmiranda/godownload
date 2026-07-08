@@ -400,7 +400,7 @@ downloads:
 
   # run shell commands after a task succeeds, fails, or completes
   example_hooks:
-    url: https://httpbin.org/anything/hooks
+    url: https://httpbingo.org/anything/hooks
     save:
       filename: hooks_success.json
     hooks:

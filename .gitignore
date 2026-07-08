@@ -4,3 +4,6 @@
 
 # Local temp/dev files
 /tmp
+e2e-tests/*/d-files
+e2e-tests/support/selfsignedserver/selfsignedserver.pid
+.task/*

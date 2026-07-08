@@ -1,0 +1,103 @@
+version: '3'
+
+vars:
+  APP_NAME: godownload
+  MAIN_PKG: ./cmd/godownload
+  DIST_DIR: dist
+  E2E_SELF_SIGNED_SERVER: ./e2e-tests/support/selfsignedserver
+  E2E_SELF_SIGNED_PORT: '18443' 
+  E2E_HTTPBIN_PORT: '18080'
+  E2E_HTTPBIN_NAME: 'godownload-e2e-httpbingo'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test ./...
+
+  build:
+    desc: Build host binary to dist/
+    cmds:
+      - task: build:platform
+      - cp {{.DIST_DIR}}/{{.APP_NAME}}-{{.GOOS}}-{{.GOARCH}} {{.DIST_DIR}}/{{.APP_NAME}}
+    vars:
+      GOOS:
+        sh: go env GOOS
+      GOARCH:
+        sh: go env GOARCH
+
+  build:arm64:
+    desc: Cross-compile linux/arm64 binary to dist/
+    cmds:
+      - task: build:platform
+        vars:
+          GOOS: linux
+          GOARCH: arm64
+
+  build:platform:
+    internal: true
+    vars:
+      GOOS:
+        sh: go env GOOS
+      GOARCH:
+        sh: go env GOARCH
+      BIN: '{{.DIST_DIR}}/{{.APP_NAME}}-{{.GOOS}}-{{.GOARCH}}'
+    cmds:
+      - mkdir -p {{.DIST_DIR}}
+      - env GOOS={{.GOOS}} GOARCH={{.GOARCH}} CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o {{.BIN}} {{.MAIN_PKG}}
+    sources:
+      - cmd/godownload/**/*.go
+      - internal/**/*.go
+      - go.mod
+      - go.sum
+    generates:
+      - '{{.BIN}}'
+
+  e2e:clean:
+    internal: true
+    cmds:
+      - cmd: rm -rf e2e-tests/success/d-files
+        ignore_error: true
+
+  e2e:selfsigned:start:
+    internal: true
+    cmds:
+      - >-
+        go run {{.E2E_SELF_SIGNED_SERVER}}
+        --start --restart-if-running
+        --port {{.E2E_SELF_SIGNED_PORT}}
+
+  e2e:selfsigned:stop:
+    internal: true
+    cmds:
+      - go run {{.E2E_SELF_SIGNED_SERVER}} --stop --port {{.E2E_SELF_SIGNED_PORT}}
+  
+  e2e:httpbingo:start:
+    # internal: true
+    cmds:
+      - cmd: docker container rm -f {{.E2E_HTTPBIN_NAME}}
+        # ignore_error: true
+      - docker run --name {{.E2E_HTTPBIN_NAME}} --rm -d -p {{.E2E_HTTPBIN_PORT}}:8080 ghcr.io/mccutchen/go-httpbin
+      - echo "httpbin running on port {{.E2E_HTTPBIN_PORT}}"
+  
+  e2e:httpbingo:stop:
+    # internal: true
+    cmds:
+      - docker stop {{.E2E_HTTPBIN_NAME}}
+      - echo "httpbin stopped"
+
+  e2e-tests:
+    desc: Run success-path end-to-end tests
+    deps:
+      - e2e:clean
+      - e2e:selfsigned:start
+      - e2e:httpbingo:start
+    cmds:
+      - defer: { task: e2e:selfsigned:stop }
+      - defer: { task: e2e:httpbingo:stop }
+      - go run {{.MAIN_PKG}} -config e2e-tests/success/download.yaml
