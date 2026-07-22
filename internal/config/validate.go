@@ -98,9 +98,6 @@ func validateTask(name string, task *DownloadTask, globalFilenameTemplateSet boo
 	if strings.TrimSpace(task.Save.Filename) != "" && (task.hasField("save.filename_template") || globalFilenameTemplateSet) {
 		diags = append(diags, Diagnostic{Severity: SeverityWarning, TaskName: name, Field: "save.filename_template", Message: "is ignored when save.filename is set"})
 	}
-	if strings.TrimSpace(task.BaseDownloadDir) != "" {
-		diags = append(diags, Diagnostic{Severity: SeverityWarning, TaskName: name, Field: "base_download_dir", Message: "top-level base_download_dir is deprecated; use save.base_download_dir"})
-	}
 
 	if task.MaxDepth < 1 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: name, Field: "max_depth", Message: "must be greater than or equal to 1"})

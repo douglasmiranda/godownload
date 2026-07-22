@@ -130,7 +130,6 @@ All options below are optional. If set here, tasks inherit them unless task-leve
 | `save.override_if_exists` | `bool` | `false` | Used only when `force_download: true`. |
 | `save.extension` | `string` | `""` | Extension override. |
 | `save.save_metadata` | `bool` | `false` | Writes `<filename>_metadata.json` beside downloaded file. |
-| `base_download_dir` | `string` | `""` | Deprecated. Use `save.base_download_dir`. |
 
 ### `default_attr_mappings`
 
@@ -656,7 +655,6 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | Empty item in `allowed_domains` or `allowed_file_types` | Error |
 | `hooks.timeout < 0` or configured hook with empty `command` | Error |
 | `save.filename` with selector or any `url_gen_*` | Error |
-| Top-level `base_download_dir` | Warning (deprecated) |
 | `save.filename_template` set together with `save.filename` | Warning (template ignored) |
 | `max_depth > 1` while selector is empty | Warning (no effect) |
 

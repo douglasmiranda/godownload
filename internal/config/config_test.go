@@ -247,18 +247,6 @@ downloads:
 			severity: SeverityWarning,
 		},
 		{
-			name: "deprecated_base_download_dir",
-			yaml: `
-downloads:
-  one:
-    url: https://example.com/file.zip
-    base_download_dir: downloads
-`,
-			taskName: "one",
-			field:    "base_download_dir",
-			severity: SeverityWarning,
-		},
-		{
 			name: "empty_allowed_domain",
 			yaml: `
 downloads:
