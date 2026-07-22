@@ -1,0 +1,181 @@
+config:
+  # Every task in this file must finish with at least one error. The e2e task
+  # checks the JSON report so one failing task cannot hide an accidental pass.
+  treat_warnings_as_errors: true
+  stop_all_tasks:
+    on_runtime_error: false
+  save:
+    base_download_dir: ./d-files
+  security:
+    # Our local httpbin server is not using HTTPS.
+    allow_insecure_http: true
+  hooks:
+    timeout: 5
+  env:
+    HTTPBIN_URL: "http://localhost:18080"
+
+downloads:
+  ################
+  # HTTP failures
+  ################
+
+  simple_download_http_404:
+    url: $HTTPBIN_URL/status/404
+
+  timeout_exceeded:
+    url: $HTTPBIN_URL/delay/2
+    timeout: 1
+
+  retry_exhausted:
+    url: $HTTPBIN_URL/status/503
+    retry:
+      on_http_code: [503]
+      retries: 1
+      delay: 0
+      exponential_backoff: false
+
+  ####################
+  # Selector failures
+  ####################
+
+  selector_zero_matches:
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2ltYWdlL3BuZyI+aW1nPC9hPg==
+    selector: ".missing"
+
+  selector_regex_selects_404:
+    # <a href="/anything/selector-ok">this</a>
+    # <a href="/status/404">not this</a>
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2FueXRoaW5nL3NlbGVjdG9yLW9rIj50aGlzPC9hPjxhIGhyZWY9Ii9zdGF0dXMvNDA0Ij5ub3QgdGhpczwvYT4=
+    selector: "a"
+    regex_filter: "^not this$"
+
+  selector_attr_value_regex_selects_404:
+    # <a href="/image/png">img</a>
+    # <a href="/status/404">broken</a>
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2ltYWdlL3BuZyI+aW1nPC9hPjxhIGhyZWY9Ii9zdGF0dXMvNDA0Ij5icm9rZW48L2E+
+    selector: "a"
+    attr_val_regex_filter: "/404$"
+
+  selector_explicit_attr_points_to_404:
+    # <a data-url="/status/404">broken</a>
+    url: $HTTPBIN_URL/base64/PGEgZGF0YS11cmw9Ii9zdGF0dXMvNDA0Ij5icm9rZW48L2E+
+    selector: "a"
+    attr: "data-url"
+
+  selector_missing_attr_mapping:
+    # <span data-url="/image/png">image</span>
+    url: $HTTPBIN_URL/base64/PHNwYW4gZGF0YS11cmw9Ii9pbWFnZS9wbmciPmltYWdlPC9zcGFuPg==
+    selector: "span"
+
+  selector_matches_limit_keeps_404:
+    # <a href="/status/404">broken first</a>
+    # <a href="/image/png">valid second</a>
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL3N0YXR1cy80MDQiPmJyb2tlbiBmaXJzdDwvYT48YSBocmVmPSIvaW1hZ2UvcG5nIj52YWxpZCBzZWNvbmQ8L2E+
+    selector: "a"
+    selector_matches_limit: 1
+
+  download_limit_keeps_404:
+    # <a href="/status/404">broken first</a>
+    # <a href="/image/png">valid second</a>
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL3N0YXR1cy80MDQiPmJyb2tlbiBmaXJzdDwvYT48YSBocmVmPSIvaW1hZ2UvcG5nIj52YWxpZCBzZWNvbmQ8L2E+
+    selector: "a"
+    download_limit: 1
+
+  #########################
+  # URL generation failures
+  #########################
+
+  generated_file_missing:
+    url: $HTTPBIN_URL/status/{{.CODE}}
+    url_gen_file:
+      var_name: CODE
+      file: ./assets/does-not-exist.txt
+
+  generated_query_filename_collision:
+    # Both URLs have the same ORIGINAL_FILENAME. Running serially guarantees
+    # the second one is skipped and its warning is promoted to an error.
+    url: $HTTPBIN_URL/anything/generated-query-collision?item={{.ITEM}}
+    downloads_per_task_concurrency: 1
+    url_gen_list:
+      var_name: ITEM
+      values: ["A", "B"]
+
+  ####################
+  # Security failures
+  ####################
+
+  insecure_http_blocked:
+    url: $HTTPBIN_URL/anything/insecure-http-blocked
+    security:
+      allow_insecure_http: false
+
+  domain_not_allowed:
+    url: $HTTPBIN_URL/anything/domain-not-allowed
+    security:
+      allowed_domains: ["example.com"]
+
+  file_extension_not_allowed:
+    url: $HTTPBIN_URL/image/png
+    security:
+      allowed_file_types: ["jpg"]
+
+  response_content_type_not_allowed:
+    # The URL extension is allowed, but /anything responds with JSON.
+    url: $HTTPBIN_URL/anything/not-really-a-pdf.pdf
+    security:
+      allowed_file_types: ["pdf"]
+
+  redirects_disabled:
+    url: $HTTPBIN_URL/redirect-to?url=$HTTPBIN_URL/anything/redirect-target
+    security:
+      follow_redirects: false
+
+  max_download_size_exceeded:
+    # /robots.txt is 30 bytes.
+    url: $HTTPBIN_URL/robots.txt
+    security:
+      max_download_size: 29b
+
+  max_in_memory_size_exceeded:
+    # /robots.txt is 30 bytes.
+    url: $HTTPBIN_URL/robots.txt
+    security:
+      max_in_memory_size: 29b
+
+  self_signed_certificate_rejected:
+    url: https://127.0.0.1:18443/self-signed-test.txt
+    security:
+      allow_self_signed_cert: false
+
+  ########################
+  # Authentication failure
+  ########################
+
+  basic_auth_wrong_password:
+    url: $HTTPBIN_URL/basic-auth/testuser/testpassword
+    auth:
+      type: basic
+      username: "testuser"
+      password: "wrong-password"
+
+  bearer_auth_missing:
+    url: $HTTPBIN_URL/bearer
+
+  ################
+  # Hook failures
+  ################
+
+  hook_nonzero_exit:
+    url: $HTTPBIN_URL/anything/hook-nonzero-exit
+    hooks:
+      fail_task_if_error: true
+      on_success:
+        command: exit 7
+
+  hook_timeout:
+    url: $HTTPBIN_URL/anything/hook-timeout
+    hooks:
+      fail_task_if_error: true
+      timeout: 1
+      on_success:
+        command: sleep 2

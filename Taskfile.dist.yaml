@@ -63,6 +63,8 @@ tasks:
     cmds:
       - cmd: rm -rf e2e-tests/success/d-files
         ignore_error: true
+      - cmd: rm -rf e2e-tests/failures/d-files
+        ignore_error: true
 
   e2e:selfsigned:start:
     internal: true
@@ -78,21 +80,21 @@ tasks:
       - go run {{.E2E_SELF_SIGNED_SERVER}} --stop --port {{.E2E_SELF_SIGNED_PORT}}
   
   e2e:httpbingo:start:
-    # internal: true
+    internal: true
     cmds:
       - cmd: docker container rm -f {{.E2E_HTTPBIN_NAME}}
-        # ignore_error: true
+        ignore_error: true
       - docker run --name {{.E2E_HTTPBIN_NAME}} --rm -d -p {{.E2E_HTTPBIN_PORT}}:8080 ghcr.io/mccutchen/go-httpbin
       - echo "httpbin running on port {{.E2E_HTTPBIN_PORT}}"
   
   e2e:httpbingo:stop:
-    # internal: true
+    internal: true
     cmds:
       - docker stop {{.E2E_HTTPBIN_NAME}}
       - echo "httpbin stopped"
 
   e2e-tests:
-    desc: Run success-path end-to-end tests
+    desc: Run success-path and failure-path end-to-end tests
     deps:
       - e2e:clean
       - e2e:selfsigned:start
@@ -100,4 +102,6 @@ tasks:
     cmds:
       - defer: { task: e2e:selfsigned:stop }
       - defer: { task: e2e:httpbingo:stop }
-      - go run {{.MAIN_PKG}} -config e2e-tests/success/download.yaml
+      - go run {{.MAIN_PKG}} -config e2e-tests/success/download.yaml -report-file e2e-tests/success/d-files/report.json
+      - go run {{.MAIN_PKG}} -config e2e-tests/failures/download.yaml -report-file e2e-tests/failures/d-files/report.json || true
+      
