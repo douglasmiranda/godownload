@@ -44,6 +44,23 @@ Goals:
 | Required (Req.) | `Yes`, `No`, or `Conditional` |
 | Notes | Behavior, constraints, and interactions |
 
+## Running Specific Tasks
+
+By default, Godownload runs every task under `downloads`. Use the `-tasks` CLI flag
+to run one or more tasks by name:
+
+```bash
+godownload -config download.yaml -tasks task1
+godownload -config download.yaml -tasks task1,task2,task3
+godownload -config download.yaml -tasks "task1, task2, task3"
+```
+
+Task names are comma-separated, whitespace is trimmed, and repeated names run only
+once. Omitting `-tasks` or passing an empty value runs all tasks. The complete YAML
+file is loaded and validated before selection, so an invalid unselected task still
+prevents the run. If any requested name is not a key under `downloads`, no tasks
+run. Summaries and JSON reports count and include only the tasks that ran.
+
 ## YAML Layout
 
 ```yaml

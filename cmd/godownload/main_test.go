@@ -97,6 +97,161 @@ downloads:
 	}
 }
 
+func TestRun_TasksSelectsSingleTask(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "download.yaml")
+	yml := `
+downloads:
+  selected:
+    url: https://example.com/selected.pdf
+    security:
+      allowed_domains: ["blocked.test"]
+      allowed_file_types: ["pdf"]
+  ignored:
+    url: https://example.com/ignored.pdf
+    security:
+      allowed_domains: ["blocked.test"]
+      allowed_file_types: ["pdf"]
+`
+	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	var errOut strings.Builder
+	exitCode := run([]string{"-config", cfg, "-tasks", "selected"}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 from selected task, got %d", exitCode)
+	}
+	if !strings.Contains(out.String(), "task selected") {
+		t.Fatalf("expected selected task to run, got stdout %q", out.String())
+	}
+	if strings.Contains(out.String(), "task ignored") || strings.Contains(errOut.String(), "[error] ignored") {
+		t.Fatalf("expected ignored task not to run, stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "summary: tasks=1") {
+		t.Fatalf("expected selected task count in summary, got %q", out.String())
+	}
+}
+
+func TestRun_TasksSelectsMultipleTasksAndReportsSelectedCount(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "download.yaml")
+	reportPath := filepath.Join(dir, "report.json")
+	yml := `
+downloads:
+  a_task:
+    url: https://example.com/a.pdf
+    security:
+      allowed_domains: ["blocked.test"]
+      allowed_file_types: ["pdf"]
+  ignored:
+    url: https://example.com/ignored.pdf
+    security:
+      allowed_domains: ["blocked.test"]
+      allowed_file_types: ["pdf"]
+  z_task:
+    url: https://example.com/z.pdf
+    security:
+      allowed_domains: ["blocked.test"]
+      allowed_file_types: ["pdf"]
+`
+	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	var errOut strings.Builder
+	exitCode := run([]string{
+		"-config", cfg,
+		"-tasks", " z_task, a_task, z_task ",
+		"-report-file", reportPath,
+	}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1 from selected tasks, got %d", exitCode)
+	}
+	if !strings.Contains(out.String(), "task a_task") || !strings.Contains(out.String(), "task z_task") {
+		t.Fatalf("expected both selected tasks to run, got %q", out.String())
+	}
+	if strings.Contains(out.String(), "task ignored") || strings.Contains(errOut.String(), "[error] ignored") {
+		t.Fatalf("expected ignored task not to run, stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "summary: tasks=2") {
+		t.Fatalf("expected de-duplicated selected task count in summary, got %q", out.String())
+	}
+
+	b, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("expected report file: %v", err)
+	}
+	var rr runReport
+	if err := json.Unmarshal(b, &rr); err != nil {
+		t.Fatalf("expected valid report json: %v", err)
+	}
+	if rr.TaskCount != 2 || len(rr.Tasks) != 2 {
+		t.Fatalf("expected report to contain two selected tasks, got %+v", rr)
+	}
+	for _, task := range rr.Tasks {
+		if task.TaskName != "a_task" && task.TaskName != "z_task" {
+			t.Fatalf("unexpected unselected task in report: %+v", task)
+		}
+	}
+}
+
+func TestRun_TasksRejectsUnknownNames(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "download.yaml")
+	yml := `
+downloads:
+  known:
+    url: https://example.com/file.pdf
+`
+	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	var errOut strings.Builder
+	exitCode := run([]string{"-config", cfg, "-tasks", "missing_b,known,missing_a"}, &out, &errOut)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for unknown tasks, got %d", exitCode)
+	}
+	if got := errOut.String(); !strings.Contains(got, "unknown task(s): missing_a, missing_b") {
+		t.Fatalf("expected sorted unknown-task error, got %q", got)
+	}
+	if strings.Contains(out.String(), "task known") {
+		t.Fatalf("expected no tasks to run when selection is invalid, got %q", out.String())
+	}
+}
+
+func TestRun_TasksStillValidatesUnselectedTasks(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "download.yaml")
+	yml := `
+downloads:
+  selected:
+    url: https://example.com/file.pdf
+  invalid_unselected:
+    url: ""
+`
+	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	var errOut strings.Builder
+	exitCode := run([]string{"-config", cfg, "-tasks", "selected"}, &out, &errOut)
+	if exitCode != 1 {
+		t.Fatalf("expected full config validation to fail, got exit code %d", exitCode)
+	}
+	if !strings.Contains(errOut.String(), "invalid_unselected.url") {
+		t.Fatalf("expected diagnostic for unselected invalid task, got %q", errOut.String())
+	}
+	if strings.Contains(out.String(), "task selected") {
+		t.Fatalf("expected no tasks to run after config validation failure, got %q", out.String())
+	}
+}
+
 func TestRun_JSONOutput(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "download.yaml")

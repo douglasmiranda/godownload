@@ -24,6 +24,17 @@ Run:
 ./dist/godownload -config ./download.yaml
 ```
 
+Run only specific tasks from the config:
+
+```bash
+./dist/godownload -config ./download.yaml -tasks task1
+./dist/godownload -config ./download.yaml -tasks task1,task2,task3
+```
+
+Task names are comma-separated. Spaces are allowed when the value is quoted, for example
+`-tasks "task1, task2, task3"`. The complete config is loaded and validated before
+the selected tasks run, and an unknown task name stops the run.
+
 ### Make targets
 
 ```bash

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/douglasmiranda/godownload/internal/config"
@@ -62,6 +63,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	outputMode := fs.String("output", "text", "Output mode: text or json")
 	reportFile := fs.String("report-file", "", "Optional path to write the structured run report as JSON")
 	noColor := fs.Bool("no-color", false, "Disable color output")
+	tasks := fs.String("tasks", "", "Comma-separated task names to run (default: all tasks)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -103,7 +105,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	if len(cfg.Downloads) == 0 {
+	names, unknownTasks := selectedTaskNames(cfg.Downloads, *tasks)
+	if len(unknownTasks) > 0 {
+		printer.PrintError(fmt.Sprintf("unknown task(s): %s", strings.Join(unknownTasks, ", ")))
+		return 2
+	}
+
+	taskCount := len(names)
+	if taskCount == 0 {
 		report.TaskCount = 0
 		if writeErr := writeReportFile(*reportFile, report); writeErr != nil {
 			printer.PrintError(fmt.Sprintf("failed to write report file: %s", logging.RedactText(writeErr.Error())))
@@ -122,7 +131,6 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	names := sortedTaskNames(cfg.Downloads)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -267,7 +275,7 @@ scheduleLoop:
 		}
 	}
 
-	report.TaskCount = len(cfg.Downloads)
+	report.TaskCount = taskCount
 	report.SavedTotal = totalSaved
 	report.SkippedTotal = totalSkipped
 	report.WarningTotal = totalWarnings
@@ -286,9 +294,9 @@ scheduleLoop:
 		}
 		fmt.Fprintf(stdout, "%s\n", string(b))
 	} else if printer.Interactive() {
-		printer.PrintResultsTable(tableRows, tableDetails, len(cfg.Downloads), totalSaved, totalSkipped, totalWarnings, totalErrors, stopTriggered, stopTask)
+		printer.PrintResultsTable(tableRows, tableDetails, taskCount, totalSaved, totalSkipped, totalWarnings, totalErrors, stopTriggered, stopTask)
 	} else {
-		printer.PrintLegacySummary(len(cfg.Downloads), totalSaved, totalSkipped, totalWarnings, totalErrors)
+		printer.PrintLegacySummary(taskCount, totalSaved, totalSkipped, totalWarnings, totalErrors)
 	}
 	if totalErrors > 0 {
 		return 1
@@ -303,6 +311,36 @@ func sortedTaskNames(m map[string]*config.DownloadTask) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func selectedTaskNames(m map[string]*config.DownloadTask, tasks string) ([]string, []string) {
+	if strings.TrimSpace(tasks) == "" {
+		return sortedTaskNames(m), nil
+	}
+
+	requested := make(map[string]struct{})
+	for _, name := range strings.Split(tasks, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			requested[name] = struct{}{}
+		}
+	}
+	if len(requested) == 0 {
+		return sortedTaskNames(m), nil
+	}
+
+	names := make([]string, 0, len(requested))
+	unknown := make([]string, 0)
+	for name := range requested {
+		if _, ok := m[name]; ok {
+			names = append(names, name)
+		} else {
+			unknown = append(unknown, name)
+		}
+	}
+	sort.Strings(names)
+	sort.Strings(unknown)
+	return names, unknown
 }
 
 func writeReportFile(path string, report runReport) error {
