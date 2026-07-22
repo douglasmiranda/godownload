@@ -1,0 +1,68 @@
+config:
+  # Warning cases must remain successful; promoting warnings would turn this
+  # suite into another failure-path test.
+  treat_warnings_as_errors: false
+  save:
+    base_download_dir: ./d-files
+  security:
+    # Our local httpbin server is not using HTTPS.
+    allow_insecure_http: true
+  hooks:
+    fail_task_if_error: false
+    timeout: 5
+  env:
+    HTTPBIN_URL: "http://localhost:18080"
+
+downloads:
+  ####################
+  # Runtime warnings
+  ####################
+
+  no_urls_generated:
+    url: $HTTPBIN_URL/anything/{{.VALUE}}
+    url_gen_file:
+      var_name: VALUE
+      file: ./assets/empty.txt
+
+  selector_zero_matches:
+    # <a href="/image/png">image</a>
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2ltYWdlL3BuZyI+aW1hZ2U8L2E+
+    selector: ".missing"
+
+  existing_file_skipped:
+    # Both URLs have the same ORIGINAL_FILENAME. Serial execution guarantees
+    # that the second download sees the file written by the first.
+    url: $HTTPBIN_URL/anything/warning-query-collision?item={{.ITEM}}
+    downloads_per_task_concurrency: 1
+    url_gen_list:
+      var_name: ITEM
+      values: ["A", "B"]
+
+  hook_nonzero_exit:
+    url: $HTTPBIN_URL/anything/warning-hook-nonzero
+    hooks:
+      on_success:
+        command: exit 7
+
+  hook_timeout:
+    url: $HTTPBIN_URL/anything/warning-hook-timeout
+    hooks:
+      timeout: 1
+      on_success:
+        command: sleep 2
+
+  ##########################
+  # Configuration warnings
+  ##########################
+
+  filename_template_ignored:
+    url: $HTTPBIN_URL/robots.txt
+    save:
+      filename: warning-filename-wins.txt
+      filename_template: "ignored-{{.ORIGINAL_FILENAME}}"
+
+  max_depth_without_selector:
+    url: $HTTPBIN_URL/robots.txt
+    max_depth: 2
+    save:
+      filename: warning-unused-max-depth.txt

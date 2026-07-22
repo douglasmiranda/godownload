@@ -65,6 +65,8 @@ tasks:
         ignore_error: true
       - cmd: rm -rf e2e-tests/failures/d-files
         ignore_error: true
+      - cmd: rm -rf e2e-tests/warnings/d-files
+        ignore_error: true
 
   e2e:selfsigned:start:
     internal: true
@@ -94,7 +96,7 @@ tasks:
       - echo "httpbin stopped"
 
   e2e-tests:
-    desc: Run success-path and failure-path end-to-end tests
+    desc: Run success, warning, and failure end-to-end tests
     deps:
       - e2e:clean
       - e2e:selfsigned:start
@@ -103,5 +105,6 @@ tasks:
       - defer: { task: e2e:selfsigned:stop }
       - defer: { task: e2e:httpbingo:stop }
       - go run {{.MAIN_PKG}} -config e2e-tests/success/download.yaml -report-file e2e-tests/success/d-files/report.json
+      - go run {{.MAIN_PKG}} -config e2e-tests/warnings/download.yaml -report-file e2e-tests/warnings/d-files/report.json
       - go run {{.MAIN_PKG}} -config e2e-tests/failures/download.yaml -report-file e2e-tests/failures/d-files/report.json || true
       
