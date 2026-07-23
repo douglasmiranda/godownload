@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yml
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            binary: godownload
+            format: tar.gz
+          - goos: windows
+            goarch: amd64
+            binary: godownload.exe
+            format: zip
+          - goos: linux
+            goarch: arm64
+            binary: godownload
+            format: tar.gz
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p staging dist
+          CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
+            go build -trimpath -ldflags="-s -w" \
+            -o "staging/${{ matrix.binary }}" ./cmd/godownload
+
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          asset="godownload-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [[ "${{ matrix.format }}" == "zip" ]]; then
+            (
+              cd staging
+              zip "../dist/${asset}.zip" "${{ matrix.binary }}"
+            )
+          else
+            tar -C staging -czf "dist/${asset}.tar.gz" "${{ matrix.binary }}"
+          fi
+
+      - name: Upload packaged binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd dist
+          sha256sum godownload-* > checksums.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v0.0.${{ github.run_number }}
+        run: |
+          gh release create "${TAG}" dist/* \
+            --title "${TAG}" \
+            --target "${GITHUB_SHA}" \
+            --generate-notes

@@ -4,15 +4,56 @@ CLI tool to download files from static URLs, HTML pages (via selectors), or gene
 
 ## Status
 
-Installation is not released yet.
+Prebuilt binaries are published through [GitHub Releases](https://github.com/douglasmiranda/godownload/releases).
 
 ## Installation
 
-TODO
+Each release provides:
+
+- `godownload-linux-amd64.tar.gz`
+- `godownload-linux-arm64.tar.gz`
+- `godownload-windows-amd64.zip`
+- `checksums.txt`
+
+Release versions increase automatically with each release workflow run, such as
+`v0.0.1`, `v0.0.2`, and so on.
+
+### Linux
+
+Set `ARCH` to `amd64` for most Intel and AMD computers, or `arm64` for a
+64-bit ARM computer:
+
+```bash
+ARCH=amd64
+curl -LO "https://github.com/douglasmiranda/godownload/releases/latest/download/godownload-linux-${ARCH}.tar.gz"
+curl -LO "https://github.com/douglasmiranda/godownload/releases/latest/download/checksums.txt"
+sha256sum --ignore-missing --check checksums.txt
+tar -xzf "godownload-linux-${ARCH}.tar.gz"
+sudo install godownload /usr/local/bin/godownload
+```
+
+### Windows
+
+Download and extract the Windows archive with PowerShell:
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://github.com/douglasmiranda/godownload/releases/latest/download/godownload-windows-amd64.zip" `
+  -OutFile "godownload-windows-amd64.zip"
+Get-FileHash -Algorithm SHA256 "godownload-windows-amd64.zip"
+Expand-Archive -Path "godownload-windows-amd64.zip" -DestinationPath "."
+.\godownload.exe -config .\download.yaml
+```
+
+Move `godownload.exe` to a directory on your `PATH` to run it from anywhere.
+Compare the hash with the archive's entry in `checksums.txt` on the
+[latest release page](https://github.com/douglasmiranda/godownload/releases/latest).
 
 ## Build From Source
 
 ### Manual build
+
+Go 1.26.5 or newer is required.
 
 ```bash
 go build -trimpath -ldflags="-s -w" -o dist/godownload ./cmd/godownload
@@ -35,12 +76,14 @@ Task names are comma-separated. Spaces are allowed when the value is quoted, for
 `-tasks "task1, task2, task3"`. The complete config is loaded and validated before
 the selected tasks run, and an unknown task name stops the run.
 
-### Make targets
+### Task targets
+
+With [Task](https://taskfile.dev/) installed:
 
 ```bash
-make build
-make test
-make e2e-tests
+task -t Taskfile.dist.yaml build
+task -t Taskfile.dist.yaml test
+task -t Taskfile.dist.yaml e2e-tests
 ```
 
 The default binary is generated at `dist/godownload`.
