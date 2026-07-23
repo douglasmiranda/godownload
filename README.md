@@ -47,6 +47,8 @@ The default binary is generated at `dist/godownload`.
 
 ## Config Examples
 
+
+
 ### 1) Simple: one URL
 
 ```yaml
@@ -54,6 +56,8 @@ downloads:
   one_file:
     url: https://example.com/file.zip
 ```
+
+
 
 ### 2) Sophisticated: selector-based extraction
 
@@ -70,6 +74,8 @@ downloads:
     save:
       filename_template: "{{.DATE}}_{{.ORIGINAL_FILENAME}}"
 ```
+
+
 
 ### 3) Advanced: URL generation + retry + security + regex filters
 
@@ -108,6 +114,8 @@ downloads:
       filename_template: "{{.DOMAIN}}_{{.DATE}}_{{.ORIGINAL_FILENAME}}"
       save_metadata: true
 ```
+
+
 
 ## Full Documentation
 
