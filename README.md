@@ -25,9 +25,12 @@ Set `ARCH` to `amd64` for most Intel and AMD computers, or `arm64` for a
 
 ```bash
 ARCH=amd64
+
 curl -LO "https://github.com/douglasmiranda/godownload/releases/latest/download/godownload-linux-${ARCH}.tar.gz"
+
 curl -LO "https://github.com/douglasmiranda/godownload/releases/latest/download/checksums.txt"
 sha256sum --ignore-missing --check checksums.txt
+
 tar -xzf "godownload-linux-${ARCH}.tar.gz"
 sudo install godownload /usr/local/bin/godownload
 ```
