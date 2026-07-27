@@ -1,73 +1,88 @@
 ---
 name: godownload-download-tasks
-description: 'Create and validate godownload/godownloader download tasks in YAML. Use when authoring new entries under downloads:, choosing selector vs URL generation, setting save/retry/security/auth options, and checking task behavior against project conventions in DOWNLOAD.md.'
-argument-hint: 'Describe the file source, task goal, and required options (selector, URL generation, save, retry, security, auth).'
+description: 'Creates and validates Godownload download tasks in YAML. Use when adding or changing entries under downloads:, choosing static URLs, URL generation, or HTML discovery, and configuring save, retry, hooks, security, authentication, or environment behavior.'
+argument-hint: 'Describe the source, expected files, destination, and any discovery, naming, reliability, security, or authentication requirements.'
 user-invocable: true
 ---
 
 # Create Godownload Download Tasks
 
-## What This Skill Produces
-- A valid task entry under `downloads:` for this repository's configuration format.
-- Optional companion recommendations for `config`, `env_file`, and `env` when needed.
-- A short validation checklist to confirm behavior before running the worker.
+## Authority and Scope
 
-Primary reference: DOWNLOAD.md in the root of the repository.
+- Read the relevant section of repository-root `DOWNLOAD.md` before editing. The code is authoritative when documentation and implementation differ; the schema, defaults, and validation live in `internal/config`.
+- Inspect the target YAML first. Reuse inherited `config` defaults and preserve unrelated root settings and tasks.
+- Change only the requested task and any necessary shared `config`, `env_file`, or `env` values.
+- Do not invent selectors, credentials, allow-listed domains, filenames, or failure policy. Ask when a missing value materially changes behavior or security.
+- When editing e2e fixtures, follow `e2e-tests/success`, `warnings`, and `failures`: success tasks must have no warnings, warning tasks must remain successful, and failure tasks must all fail.
 
-## When To Use
-- You are creating a new download task for this repo.
-- You need to choose between direct URL, selector extraction, or dynamic URL generation.
-- You need to add save naming rules, retry behavior, auth, security policy, or stop-all behavior.
-- You want the final task to match project conventions shown in DOWNLOAD.md.
+## Workflow
 
-## Procedure
-1. Identify task intent and source shape.
-- Direct file URL: use `url` only.
-- HTML page with links: use `url` + `selector` (+ `attr` only if not covered by default mappings).
-- Patterned or list-driven links: use `url_gen_range`, `url_gen_list`, `url_gen_file`, or `url_gen_dates`.
+1. Establish the contract:
+   - task name;
+   - source URL/page/list and expected number of files;
+   - destination and naming/collision behavior;
+   - authentication/security constraints;
+   - timeout, retry, warning, and fail-fast expectations.
 
-2. Choose link selection strategy.
-- Use `selector` for one or many matches from HTML.
-- Add `regex_filter` when filtering by element text.
-- Add `attr_val_regex_filter` when filtering by extracted URL value.
-- Add `selector_matches_limit` if page parsing should stop early.
+2. Build the URL pipeline:
+   - Every task requires `url`.
+   - A static file uses `url` without `selector` or `url_gen_*`.
+   - Configure at most one of `url_gen_range`, `url_gen_list`, `url_gen_file`, or `url_gen_dates`. Its `var_name` must appear in `url` as `{{.VAR_NAME}}`.
+   - A generator creates seed URLs. A `selector` may then discover links from every seed page; generation and discovery are valid together.
+   - For a file containing complete URLs, use `url: "{{.URL}}"` with `url_gen_file.var_name: URL`. For paths or IDs, include the host/pattern around the variable.
+   - Generated URLs are materialized in memory before `download_limit` is applied. Bound large ranges, date spans, lists, and files.
 
-3. Configure output behavior.
-- Use `save.base_download_dir` for destination.
-- Use `save.filename` only for single-file tasks.
-- Use `save.filename_template` for deterministic naming across many files.
-- If re-running tasks, decide `force_download` and `save.override_if_exists` together.
-- Add `save.extension` or `save.save_metadata` only when required.
+3. Configure HTML discovery only when `url` resolves to HTML pages:
+   - `selector` is a CSS selector.
+   - `attr` may be omitted for mapped tags (`a[href]`, `img[src]`, `link[href]`, `script[src]`, `iframe[src]`); set it for custom elements/attributes or add an intentional `config.default_attr_mappings` entry.
+   - `regex_filter` matches trimmed element text; `attr_val_regex_filter` matches the raw extracted attribute value.
+   - `selector_matches_limit` caps extracted URLs per page. `download_limit` caps the final candidate list.
+   - Set `max_depth > 1` only for recursive selector crawling.
 
-4. Configure reliability and failure policy.
-- Use `timeout` and `download_limit` when needed.
-- Use `retry: true` for defaults, or structured `retry` for explicit HTTP/runtime logic.
-- Use `stop_all_tasks.on_runtime_error` or `stop_all_tasks.on_http_code` for fail-fast workflows.
-- Use `treat_warnings_as_errors: true` for CI-sensitive tasks.
-- Use `hooks` for simple shell follow-up commands after task success, failure, or completion.
+4. Make naming safe:
+   - Use `save.base_download_dir`; relative paths resolve from the YAML file's directory.
+   - `save.filename` is valid only when neither `selector` nor any `url_gen_*` is configured.
+   - For multiple URLs, use `save.filename_template`. The default `{{.ORIGINAL_FILENAME}}` can collide when URLs differ only by query parameters; include `{{.URL}}`, or another unique component, in that case.
+   - Existing file behavior:
+     - `force_download: false`: skip with a warning.
+     - `force_download: true` + `save.override_if_exists: true`: overwrite.
+     - `force_download: true` + `save.override_if_exists: false`: create `_1`, `_2`, and later suffixes.
+   - Add `save.extension` and `save.save_metadata` only when required.
 
-5. Configure security/auth only when required.
-- Security controls: `allow_insecure_http`, `allow_self_signed_cert`, `allowed_domains`, `allowed_file_types`.
-- Auth controls: `basic`, `bearer`, or `api_key`.
-- Prefer env variables for secrets (`env_file`, global `env`, or task-level `env`).
+5. Add operational policy deliberately:
+   - Shared task options may be placed under `config`; explicit task fields override them. Retry, auth, security, and hooks merge by field, and task `hooks.on_*: null` disables an inherited hook.
+   - `retry: true` means three retries with one-second exponential backoff, runtime retries enabled, and all HTTP statuses `>= 400` retryable.
+   - Use structured `retry` when retryable errors/codes, attempts, delay, or backoff must be explicit.
+   - `treat_warnings_as_errors` promotes zero matches, no generated URLs, existing-file skips, and non-fatal hook failures.
+   - `stop_all_tasks` can cancel other tasks; add it only when requested.
+   - Set `downloads_per_task_concurrency`, `timeout`, and limits only from an explicit requirement or an established local convention.
+   - Hooks execute shell commands after task outcome. Do not add hooks merely to validate a task; if requested, choose `fail_task_if_error` intentionally and remember `on_complete` runs after success or failure.
 
-6. Validate task compatibility.
-- Ensure exactly one URL source pattern is coherent for the task.
-- Ensure `save.filename` is not used when multiple files can match.
-- Ensure selectors and filters can actually match expected elements.
-- Ensure retry/stop rules do not conflict with desired continuation behavior.
-- Ensure hook failures intentionally warn or fail the task via `hooks.fail_task_if_error`.
-- Ensure security policy allows the target URL and file type.
+6. Apply security and secrets:
+   - HTTPS is required by default. Set `security.allow_insecure_http: true` only for an intentional HTTP source.
+   - Redirect following defaults to enabled. `security.allowed_domains` must include source, discovered-link, and redirect destinations. `security.allowed_file_types` checks both URL extension and response content type.
+   - Consider `security.max_download_size`; downloads are buffered in memory and `security.max_in_memory_size` defaults to `500mb`.
+   - `security.allow_self_signed_cert` disables normal TLS certificate verification; use only when explicitly required.
+   - Auth uses `auth.type: basic`, `bearer`, or `api_key`. Put secret values in environment variables, not YAML literals.
+   - Environment precedence is task `env`, `config.env`, root `env`, `env_file`, then process environment.
 
-## Decision Hints
-- Need many deterministic URLs: prefer `url_gen_range` or `url_gen_dates`.
-- Need full URLs from external list: set `url: "{{.URL}}"` + `url_gen_file`.
-- Need strict CI behavior: combine `treat_warnings_as_errors` with stop/retry settings.
-- Need predictable deduping/overwrites: set naming (`filename_template`) before deciding override policy.
+7. Validate without downloading:
 
-## Completion Checks
-- Task YAML is syntactically valid and nested under `downloads:`.
-- Field names and value types match examples in DOWNLOAD.md.
-- Save/retry/security/auth options are intentionally selected, not copied blindly.
-- Expected behavior for existing files, warnings, and runtime errors is explicit.
-- If secrets are needed, they come from env sources instead of hardcoding.
+```bash
+go run ./.agents/skills/godownload-download-tasks/scripts/validate-config.go path/to/download.yaml
+```
+
+Fix every error and review every warning. This validator checks strict YAML fields, environment expansion, defaults, and config rules; it cannot prove that remote selectors, credentials, content types, or URLs work.
+
+Run the actual task only when network, file writes, and configured hooks are appropriate:
+
+```bash
+go run ./cmd/godownload -config path/to/download.yaml -tasks task_name
+```
+
+## Completion Standard
+
+- Return the edited task or file and summarize assumptions.
+- State the validation command and result.
+- Call out expected file count/names, collision behavior, warning behavior, and any security relaxation.
+- Never claim runtime success unless the task itself was run and its outputs were checked.
