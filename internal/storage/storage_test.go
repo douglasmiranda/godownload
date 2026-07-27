@@ -137,6 +137,60 @@ func TestSave_SkipWhenExistsAndNotForced(t *testing.T) {
 	}
 }
 
+func TestSkipIfExists_WhenFilePresentAndNotForced(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "a.pdf")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task := &config.DownloadTask{
+		URL:  "https://example.com/a.pdf",
+		Save: config.SaveConfig{BaseDownloadDir: dir},
+	}
+
+	res, skip, err := SkipIfExists(task, "https://example.com/a.pdf")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !skip {
+		t.Fatal("expected skip")
+	}
+	if !res.Skipped || res.SkipReason != "file already exists" {
+		t.Fatalf("unexpected skip result: %#v", res)
+	}
+	if res.SavedFileName != "a.pdf" {
+		t.Fatalf("expected SavedFileName a.pdf, got %q", res.SavedFileName)
+	}
+}
+
+func TestSkipIfExists_WhenMissingOrForced(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:  "https://example.com/a.pdf",
+		Save: config.SaveConfig{BaseDownloadDir: dir},
+	}
+
+	_, skip, err := SkipIfExists(task, "https://example.com/a.pdf")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip {
+		t.Fatal("expected no skip when file is missing")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "a.pdf"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task.ForceDownload = true
+	_, skip, err = SkipIfExists(task, "https://example.com/a.pdf")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip {
+		t.Fatal("expected no skip when force_download is true")
+	}
+}
+
 func TestSave_OverrideWhenForcedAndAllowed(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "a.pdf")

@@ -40,18 +40,12 @@ func Save(taskName string, task *config.DownloadTask, downloadURL string, conten
 	if task == nil {
 		return SaveResult{}, fmt.Errorf("task is nil")
 	}
-	baseDir := task.Save.BaseDownloadDir
-	if strings.TrimSpace(baseDir) == "" {
-		baseDir = "."
+	baseDir, finalName, _, originalName, err := resolveTarget(task, downloadURL)
+	if err != nil {
+		return SaveResult{}, err
 	}
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return SaveResult{}, fmt.Errorf("create base directory: %w", err)
-	}
-
-	originalName := inferOriginalName(downloadURL)
-	finalName, err := resolveFilename(task, downloadURL, originalName)
-	if err != nil {
-		return SaveResult{}, err
 	}
 
 	f, finalPath, finalName, skipped, err := openTarget(baseDir, finalName, task)
@@ -89,6 +83,54 @@ func Save(taskName string, task *config.DownloadTask, downloadURL string, conten
 	}
 
 	return result, nil
+}
+
+// SkipIfExists reports whether the resolved destination for downloadURL already
+// exists and the task would skip writing (force_download is false). Callers can
+// use this to avoid downloading content that would be discarded.
+func SkipIfExists(task *config.DownloadTask, downloadURL string) (SaveResult, bool, error) {
+	if task == nil {
+		return SaveResult{}, false, fmt.Errorf("task is nil")
+	}
+	if task.ForceDownload {
+		return SaveResult{}, false, nil
+	}
+
+	_, finalName, finalPath, _, err := resolveTarget(task, downloadURL)
+	if err != nil {
+		return SaveResult{}, false, err
+	}
+
+	_, err = os.Stat(finalPath)
+	if err == nil {
+		return SaveResult{
+			Skipped:       true,
+			SkipReason:    "file already exists",
+			FilePath:      finalPath,
+			SavedFileName: finalName,
+		}, true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return SaveResult{}, false, nil
+	}
+	return SaveResult{}, false, fmt.Errorf("stat target file: %w", err)
+}
+
+func resolveTarget(task *config.DownloadTask, downloadURL string) (baseDir string, finalName string, finalPath string, originalName string, err error) {
+	baseDir = task.Save.BaseDownloadDir
+	if strings.TrimSpace(baseDir) == "" {
+		baseDir = "."
+	}
+	originalName = inferOriginalName(downloadURL)
+	finalName, err = resolveFilename(task, downloadURL, originalName)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	finalPath, err = containedPath(baseDir, finalName)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return baseDir, finalName, finalPath, originalName, nil
 }
 
 // openTarget atomically reserves the destination path so that concurrent

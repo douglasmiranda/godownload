@@ -91,6 +91,46 @@ func TestRunTask_DirectDownload(t *testing.T) {
 	}
 }
 
+func TestRunTask_SkipsExistingFileBeforeFetch(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/pdf")
+		fmt.Fprint(w, "new-bytes")
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "file.pdf")
+	if err := os.WriteFile(existing, []byte("old-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	task := &config.DownloadTask{
+		URL:      server.URL + "/file.pdf",
+		Save:     config.SaveConfig{BaseDownloadDir: dir},
+		Security: config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if len(res.Saved) != 1 || !res.Saved[0].Skipped {
+		t.Fatalf("expected one skipped save, got %#v", res.Saved)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("expected existing file to avoid fetch, got %d requests", requests.Load())
+	}
+	b, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "old-bytes" {
+		t.Fatalf("expected original file unchanged, got %q", string(b))
+	}
+}
+
 func TestRunTask_RejectsDownloadExceedingMaxSize(t *testing.T) {
 	payload := "0123456789" // 10 bytes
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

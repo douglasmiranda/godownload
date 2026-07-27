@@ -394,6 +394,12 @@ func (s *Service) downloadAndSave(ctx context.Context, client *http.Client, task
 		return storage.SaveResult{}, fmt.Errorf("URL extension blocked by security.allowed_file_types: %s", downloadURL)
 	}
 
+	if skipRes, skip, err := storage.SkipIfExists(task, downloadURL); err != nil {
+		return storage.SaveResult{}, err
+	} else if skip {
+		return skipRes, nil
+	}
+
 	body, contentType, err := s.fetchURL(ctx, client, task, downloadURL)
 	if err != nil {
 		return storage.SaveResult{}, err
