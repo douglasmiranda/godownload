@@ -25,6 +25,16 @@ type SaveResult struct {
 	SavedFileName string
 }
 
+// Target is the resolved destination for a download. Its values are kept
+// private so callers can pass it between storage operations without changing
+// the resolved filename.
+type Target struct {
+	baseDir      string
+	finalName    string
+	finalPath    string
+	originalName string
+}
+
 type Metadata struct {
 	MainURL          string `json:"main_url"`
 	DownloadURL      string `json:"download_url"`
@@ -40,15 +50,23 @@ func Save(taskName string, task *config.DownloadTask, downloadURL string, conten
 	if task == nil {
 		return SaveResult{}, fmt.Errorf("task is nil")
 	}
-	baseDir, finalName, _, originalName, err := resolveTarget(task, downloadURL)
+	target, err := ResolveTarget(task, downloadURL)
 	if err != nil {
 		return SaveResult{}, err
 	}
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	return SaveToTarget(taskName, task, downloadURL, target, content, contentType)
+}
+
+// SaveToTarget saves content to a previously resolved target.
+func SaveToTarget(taskName string, task *config.DownloadTask, downloadURL string, target Target, content []byte, contentType string) (SaveResult, error) {
+	if task == nil {
+		return SaveResult{}, fmt.Errorf("task is nil")
+	}
+	if err := os.MkdirAll(target.baseDir, 0o755); err != nil {
 		return SaveResult{}, fmt.Errorf("create base directory: %w", err)
 	}
 
-	f, finalPath, finalName, skipped, err := openTarget(baseDir, finalName, task)
+	f, finalPath, finalName, skipped, err := openTarget(target.baseDir, target.finalName, task)
 	if err != nil {
 		return SaveResult{}, fmt.Errorf("create downloaded file: %w", err)
 	}
@@ -69,7 +87,7 @@ func Save(taskName string, task *config.DownloadTask, downloadURL string, conten
 		meta := Metadata{
 			MainURL:          task.URL,
 			DownloadURL:      downloadURL,
-			OriginalFileName: originalName,
+			OriginalFileName: target.originalName,
 			SavedFileName:    finalName,
 			Timestamp:        time.Now().UTC().Format(time.RFC3339),
 			Size:             int64(len(content)),
@@ -85,10 +103,10 @@ func Save(taskName string, task *config.DownloadTask, downloadURL string, conten
 	return result, nil
 }
 
-// SkipIfExists reports whether the resolved destination for downloadURL already
-// exists and the task would skip writing (force_download is false). Callers can
-// use this to avoid downloading content that would be discarded.
-func SkipIfExists(task *config.DownloadTask, downloadURL string) (SaveResult, bool, error) {
+// SkipIfExists reports whether target already exists and the task would skip
+// writing (force_download is false). Callers can use this to avoid downloading
+// content that would be discarded.
+func SkipIfExists(task *config.DownloadTask, target Target) (SaveResult, bool, error) {
 	if task == nil {
 		return SaveResult{}, false, fmt.Errorf("task is nil")
 	}
@@ -96,18 +114,13 @@ func SkipIfExists(task *config.DownloadTask, downloadURL string) (SaveResult, bo
 		return SaveResult{}, false, nil
 	}
 
-	_, finalName, finalPath, _, err := resolveTarget(task, downloadURL)
-	if err != nil {
-		return SaveResult{}, false, err
-	}
-
-	_, err = os.Stat(finalPath)
+	_, err := os.Stat(target.finalPath)
 	if err == nil {
 		return SaveResult{
 			Skipped:       true,
 			SkipReason:    "file already exists",
-			FilePath:      finalPath,
-			SavedFileName: finalName,
+			FilePath:      target.finalPath,
+			SavedFileName: target.finalName,
 		}, true, nil
 	}
 	if errors.Is(err, os.ErrNotExist) {
@@ -116,21 +129,31 @@ func SkipIfExists(task *config.DownloadTask, downloadURL string) (SaveResult, bo
 	return SaveResult{}, false, fmt.Errorf("stat target file: %w", err)
 }
 
-func resolveTarget(task *config.DownloadTask, downloadURL string) (baseDir string, finalName string, finalPath string, originalName string, err error) {
-	baseDir = task.Save.BaseDownloadDir
+// ResolveTarget resolves a download destination exactly once so dynamic
+// filename template values remain stable through existence checks and saving.
+func ResolveTarget(task *config.DownloadTask, downloadURL string) (Target, error) {
+	if task == nil {
+		return Target{}, fmt.Errorf("task is nil")
+	}
+	baseDir := task.Save.BaseDownloadDir
 	if strings.TrimSpace(baseDir) == "" {
 		baseDir = "."
 	}
-	originalName = inferOriginalName(downloadURL)
-	finalName, err = resolveFilename(task, downloadURL, originalName)
+	originalName := inferOriginalName(downloadURL)
+	finalName, err := resolveFilename(task, downloadURL, originalName)
 	if err != nil {
-		return "", "", "", "", err
+		return Target{}, err
 	}
-	finalPath, err = containedPath(baseDir, finalName)
+	finalPath, err := containedPath(baseDir, finalName)
 	if err != nil {
-		return "", "", "", "", err
+		return Target{}, err
 	}
-	return baseDir, finalName, finalPath, originalName, nil
+	return Target{
+		baseDir:      baseDir,
+		finalName:    finalName,
+		finalPath:    finalPath,
+		originalName: originalName,
+	}, nil
 }
 
 // openTarget atomically reserves the destination path so that concurrent

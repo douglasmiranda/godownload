@@ -148,7 +148,11 @@ func TestSkipIfExists_WhenFilePresentAndNotForced(t *testing.T) {
 		Save: config.SaveConfig{BaseDownloadDir: dir},
 	}
 
-	res, skip, err := SkipIfExists(task, "https://example.com/a.pdf")
+	resolved, err := ResolveTarget(task, "https://example.com/a.pdf")
+	if err != nil {
+		t.Fatalf("resolve target: %v", err)
+	}
+	res, skip, err := SkipIfExists(task, resolved)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -170,7 +174,11 @@ func TestSkipIfExists_WhenMissingOrForced(t *testing.T) {
 		Save: config.SaveConfig{BaseDownloadDir: dir},
 	}
 
-	_, skip, err := SkipIfExists(task, "https://example.com/a.pdf")
+	resolved, err := ResolveTarget(task, "https://example.com/a.pdf")
+	if err != nil {
+		t.Fatalf("resolve target: %v", err)
+	}
+	_, skip, err := SkipIfExists(task, resolved)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,12 +190,43 @@ func TestSkipIfExists_WhenMissingOrForced(t *testing.T) {
 		t.Fatal(err)
 	}
 	task.ForceDownload = true
-	_, skip, err = SkipIfExists(task, "https://example.com/a.pdf")
+	_, skip, err = SkipIfExists(task, resolved)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if skip {
 		t.Fatal("expected no skip when force_download is true")
+	}
+}
+
+func TestSaveToTarget_ReusesDynamicFilename(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/a.pdf",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.UUID}}_{{.ORIGINAL_FILENAME}}",
+		},
+	}
+
+	target, err := ResolveTarget(task, "https://example.com/a.pdf")
+	if err != nil {
+		t.Fatalf("resolve target: %v", err)
+	}
+	_, skip, err := SkipIfExists(task, target)
+	if err != nil {
+		t.Fatalf("check target: %v", err)
+	}
+	if skip {
+		t.Fatal("expected resolved target to be missing")
+	}
+
+	result, err := SaveToTarget("task1", task, "https://example.com/a.pdf", target, []byte("new"), "application/pdf")
+	if err != nil {
+		t.Fatalf("save target: %v", err)
+	}
+	if result.FilePath != target.finalPath {
+		t.Fatalf("expected save to reuse %q, got %q", target.finalPath, result.FilePath)
 	}
 }
 
