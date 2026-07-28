@@ -142,7 +142,7 @@ All options below are optional. If set here, tasks inherit them unless task-leve
 | `hooks` | `object` | none | Global shell hook defaults inherited by tasks. |
 | `max_depth` | `int` | `1` | Selector crawl depth. Must be `>= 1`. |
 | `save.base_download_dir` | `string` | `.` | Base output directory. |
-| `save.filename_template` | `string` | `{{.ORIGINAL_FILENAME}}` | Used when `save.filename` is empty. |
+| `save.filename_template` | `string` | `{{.ORIGINAL_FILENAME}}` | Relative output path template used when `save.filename` is empty. |
 | `save.filename` | `string` | `""` | Fixed output filename for single-URL tasks only. |
 | `save.override_if_exists` | `bool` | `false` | Used only when `force_download: true`. |
 | `save.extension` | `string` | `""` | Extension override. |
@@ -541,7 +541,7 @@ Use this when output naming, collisions, and metadata need strict control.
 | Option | Type | Default | Req. | Notes |
 |---|---|---|---|---|
 | `save.base_download_dir` | `string` | `.` | No | Relative paths resolve from config file directory. |
-| `save.filename_template` | `string` | `{{.ORIGINAL_FILENAME}}` | No | Used when `save.filename` is empty. |
+| `save.filename_template` | `string` | `{{.ORIGINAL_FILENAME}}` | No | Relative output path template used when `save.filename` is empty. Parent directories are created as needed. |
 | `save.filename` | `string` | `""` | No | Fixed name. Invalid when task can resolve multiple URLs. |
 | `save.override_if_exists` | `bool` | `false` | No | Overwrites only when `force_download: true`. |
 | `save.extension` | `string` | `""` | No | Extension override. |
@@ -553,11 +553,15 @@ Use this when output naming, collisions, and metadata need strict control.
 |---|---|---|
 | `{{.ORIGINAL_FILENAME}}` | Name inferred from URL path | `report.pdf` |
 | `{{.URL}}` | Sanitized full URL | `https_example.com_report.pdf` |
+| `{{.URL_PATH}}` | Sanitized relative URL path, including filename; excludes query and fragment | `files/2026/report.pdf` |
+| `{{.URL_DIR}}` | Parent directory of `URL_PATH`; `.` for a top-level file | `files/2026` |
 | `{{.DOMAIN}}` | URL hostname | `example.com` |
 | `{{.TIMESTAMP}}` | UTC RFC3339 timestamp | `2026-03-31T01:02:23Z` |
 | `{{.DATE}}` | UTC date | `2026-03-31` |
 | `{{.TIME}}` | UTC time | `01-02-23` |
 | `{{.UUID}}` | Random UUID | `bd80e0d3-ec89-4458-af5c-857f21cccb89` |
+
+`filename_template` may contain relative directories. Every path component is sanitized, and the resolved output is confined to `base_download_dir`. Absolute paths, parent traversal (`..`), and URL path traversal are rejected. `URL_PATH` and `URL_DIR` use the candidate download URL before the request; redirects do not change the already resolved destination.
 
 Minimal example:
 
@@ -568,6 +572,19 @@ downloads:
     save:
       filename_template: "{{.DATE}}_{{.ORIGINAL_FILENAME}}"
 ```
+
+Mirror a URL path below the base directory:
+
+```yaml
+downloads:
+  mirrored_output:
+    url: https://example.com/media/publicacoes/2026/7/24/report.pdf?version=1
+    save:
+      base_download_dir: ./downloads
+      filename_template: "{{.URL_PATH}}"
+```
+
+This saves `./downloads/media/publicacoes/2026/7/24/report.pdf`. The equivalent customizable form is `{{.URL_DIR}}/{{.ORIGINAL_FILENAME}}`. When a task may download from multiple domains, use `{{.DOMAIN}}/{{.URL_PATH}}` to prevent identical URL paths from colliding. Query parameters are not part of `URL_PATH`, so URLs that differ only by query can still collide.
 
 Advanced example:
 
@@ -628,6 +645,7 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | Existing file + `force_download: true` + `save.override_if_exists: true` | Existing file is overwritten in place. |
 | Existing file + `force_download: true` + `save.override_if_exists: false` | New path is generated with suffix `_1`, `_2`, ... |
 | URL varies only by query params + default `save.filename_template` | Filename may repeat because default template uses path-derived `ORIGINAL_FILENAME`; use `save.filename_template` like `report-{{.URL}}.pdf` for uniqueness. |
+| `{{.URL_PATH}}` used across multiple domains | Identical URL paths may collide; prefix with `{{.DOMAIN}}/`. |
 | `save.filename` + `save.filename_template` | `save.filename` wins. Template is ignored and warning diagnostic is emitted. |
 | `save.filename` with selector/url_gen tasks | Invalid config because task may resolve multiple URLs. |
 
@@ -693,7 +711,7 @@ When `save.save_metadata: true`, a JSON file is written beside the downloaded fi
 | `main_url` | `string` | Configured task URL (`downloads.<name>.url`). |
 | `download_url` | `string` | Final URL used for request. |
 | `original_filename` | `string` | Filename inferred from URL path. |
-| `saved_filename` | `string` | Final filename after template/extension/collision resolution. |
+| `saved_filename` | `string` | Final path relative to `base_download_dir` after template/extension/collision resolution. |
 | `timestamp` | `string` | UTC RFC3339 save timestamp. |
 | `size` | `number` | Downloaded byte size. |
 | `mime_type` | `string` | Response `Content-Type`. |

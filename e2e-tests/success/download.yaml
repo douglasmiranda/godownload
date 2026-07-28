@@ -50,6 +50,15 @@ downloads:
     hooks:
       on_success:
         command: find d-files/ -maxdepth 1 -type f -name "download_and_rename_with_template_*.txt" -print -quit | grep -q .
+
+  # mirror the URL path below base_download_dir
+  mirror_url_path:
+    url: $HTTPBIN_URL/anything/media/publicacoes/2026/7/24/file.pdf
+    save:
+      filename_template: "{{.URL_PATH}}"
+    hooks:
+      on_success:
+        command: test -f ./d-files/anything/media/publicacoes/2026/7/24/file.pdf
   
   # base64 encoded string
   # PGEgaHJlZj0iL2Jhc2U2NC9TRlJVVUVKSlRpQnBjeUJoZDJWemIyMWwiPkhUVFBCSU4gaXMgYXdlc29tZTwvYT4=
@@ -261,18 +270,18 @@ downloads:
   # Using force_download on both because concurrency
   force_download:
     force_download: true
-    url: $HTTPBIN_URL/anything
+    url: $HTTPBIN_URL/anything/force_download_test
     hooks:
       on_success:
-        command: test -f ./d-files/anything
+        command: test -f ./d-files/force_download_test
 
   # the one that downloads last will add _1 to the filename
   force_download_auto_append_counter:
     force_download: true
-    url: $HTTPBIN_URL/anything
+    url: $HTTPBIN_URL/anything/force_download_test
     hooks:
       on_success:
-        command: test -f ./d-files/anything_1
+        command: test -f ./d-files/force_download_test_1
 
   save_with_extension_override:
     url: $HTTPBIN_URL/image/png

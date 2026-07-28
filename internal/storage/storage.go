@@ -65,8 +65,18 @@ func SaveToTarget(taskName string, task *config.DownloadTask, downloadURL string
 	if err := os.MkdirAll(target.baseDir, 0o755); err != nil {
 		return SaveResult{}, fmt.Errorf("create base directory: %w", err)
 	}
+	root, err := os.OpenRoot(target.baseDir)
+	if err != nil {
+		return SaveResult{}, fmt.Errorf("open base directory: %w", err)
+	}
+	defer root.Close()
 
-	f, finalPath, finalName, skipped, err := openTarget(target.baseDir, target.finalName, task)
+	parentDir := filepath.Dir(target.finalName)
+	if err := root.MkdirAll(parentDir, 0o755); err != nil {
+		return SaveResult{}, fmt.Errorf("create target directory: %w", err)
+	}
+
+	f, finalPath, finalName, skipped, err := openTarget(root, target.baseDir, target.finalName, task)
 	if err != nil {
 		return SaveResult{}, fmt.Errorf("create downloaded file: %w", err)
 	}
@@ -83,6 +93,7 @@ func SaveToTarget(taskName string, task *config.DownloadTask, downloadURL string
 
 	result := SaveResult{FilePath: finalPath, SavedFileName: finalName}
 	if task.Save.SaveMetadata {
+		metaName := metadataPathFor(finalName)
 		metaPath := metadataPathFor(finalPath)
 		meta := Metadata{
 			MainURL:          task.URL,
@@ -94,7 +105,7 @@ func SaveToTarget(taskName string, task *config.DownloadTask, downloadURL string
 			MIMEType:         contentType,
 			DownloadTaskName: taskName,
 		}
-		if err := writeMetadata(metaPath, meta); err != nil {
+		if err := writeMetadata(root, metaName, meta); err != nil {
 			return SaveResult{}, err
 		}
 		result.MetadataPath = metaPath
@@ -114,7 +125,16 @@ func SkipIfExists(task *config.DownloadTask, target Target) (SaveResult, bool, e
 		return SaveResult{}, false, nil
 	}
 
-	_, err := os.Stat(target.finalPath)
+	root, err := os.OpenRoot(target.baseDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return SaveResult{}, false, nil
+	}
+	if err != nil {
+		return SaveResult{}, false, fmt.Errorf("open base directory: %w", err)
+	}
+	defer root.Close()
+
+	_, err = root.Stat(target.finalName)
 	if err == nil {
 		return SaveResult{
 			Skipped:       true,
@@ -161,18 +181,21 @@ func ResolveTarget(task *config.DownloadTask, downloadURL string) (Target, error
 // silently overwrite each other. It returns an open file handle for the
 // caller to write to, or skipped=true when the file already exists and the
 // task is not configured to force/override.
-func openTarget(baseDir string, name string, task *config.DownloadTask) (f *os.File, finalPath string, finalName string, skipped bool, err error) {
+func openTarget(root *os.Root, baseDir string, name string, task *config.DownloadTask) (f *os.File, finalPath string, finalName string, skipped bool, err error) {
+	if root == nil {
+		return nil, "", name, false, fmt.Errorf("base directory root is nil")
+	}
 	finalPath, err = containedPath(baseDir, name)
 	if err != nil {
 		return nil, "", name, false, err
 	}
 
 	if task.ForceDownload && task.Save.OverrideIfExists {
-		f, err = os.OpenFile(finalPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		f, err = root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		return f, finalPath, name, false, err
 	}
 
-	f, err = os.OpenFile(finalPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	f, err = root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err == nil {
 		return f, finalPath, name, false, nil
 	}
@@ -192,7 +215,7 @@ func openTarget(baseDir string, name string, task *config.DownloadTask) (f *os.F
 		if err != nil {
 			return nil, "", candidateName, false, err
 		}
-		f, err = os.OpenFile(candidatePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		f, err = root.OpenFile(candidateName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
 			return f, candidatePath, candidateName, false, nil
 		}
@@ -203,6 +226,9 @@ func openTarget(baseDir string, name string, task *config.DownloadTask) (f *os.F
 }
 
 func containedPath(baseDir string, name string) (string, error) {
+	if filepath.IsAbs(name) || filepath.VolumeName(name) != "" || path.IsAbs(filepath.ToSlash(name)) {
+		return "", fmt.Errorf("resolved path must be relative to base directory: %s", name)
+	}
 	base, err := filepath.Abs(baseDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve base directory: %w", err)
@@ -233,9 +259,19 @@ func resolveFilename(task *config.DownloadTask, downloadURL string, originalName
 	if strings.TrimSpace(tplText) == "" {
 		tplText = "{{.ORIGINAL_FILENAME}}"
 	}
+	urlPath, urlDir := "", ""
+	if strings.Contains(tplText, "URL_PATH") || strings.Contains(tplText, "URL_DIR") {
+		resolvedURLPath, resolvedURLDir, err := urlPathTemplateValues(downloadURL, originalName)
+		if err != nil {
+			return "", err
+		}
+		urlPath, urlDir = resolvedURLPath, resolvedURLDir
+	}
 	vars := map[string]string{
-		"ORIGINAL_FILENAME": originalName,
+		"ORIGINAL_FILENAME": sanitizeFilenameValue(originalName),
 		"URL":               sanitizeFilenameValue(downloadURL),
+		"URL_PATH":          urlPath,
+		"URL_DIR":           urlDir,
 		"DOMAIN":            domainFromURL(downloadURL),
 		"TIMESTAMP":         time.Now().UTC().Format(time.RFC3339),
 		"DATE":              time.Now().UTC().Format("2006-01-02"),
@@ -255,18 +291,20 @@ func resolveFilename(task *config.DownloadTask, downloadURL string, originalName
 	if name == "" {
 		return "", fmt.Errorf("resolved filename is empty")
 	}
-	name = sanitizeFilenameValue(name)
-	if name == "" {
-		return "", fmt.Errorf("resolved filename is empty after sanitization")
+	name, err = sanitizeRelativePath(name)
+	if err != nil {
+		return "", err
 	}
 	targetExt := normalizeExtension(task.Save.Extension)
 	if targetExt == "" {
 		targetExt = normalizeExtension(path.Ext(originalName))
 	}
-	return ensureTrailingExtension(name, targetExt), nil
+	name = ensureTrailingExtension(name, targetExt)
+	return sanitizeRelativePath(name)
 }
 
 var invalidFilenameCharsPattern = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
+var windowsAbsolutePathPattern = regexp.MustCompile(`^[A-Za-z]:[/\\]`)
 
 func sanitizeFilenameValue(v string) string {
 	v = strings.TrimSpace(v)
@@ -281,6 +319,80 @@ func sanitizeFilenameValue(v string) string {
 		v = strings.ReplaceAll(v, "__", "_")
 	}
 	return v
+}
+
+func sanitizeRelativePath(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", fmt.Errorf("resolved filename is empty")
+	}
+	if strings.HasPrefix(v, "/") || strings.HasPrefix(v, `\`) || windowsAbsolutePathPattern.MatchString(v) {
+		return "", fmt.Errorf("resolved path must be relative to base directory: %s", v)
+	}
+	if strings.HasSuffix(v, "/") || strings.HasSuffix(v, `\`) {
+		return "", fmt.Errorf("resolved path must end with a filename: %s", v)
+	}
+
+	// Normalize separators before splitting so a second pass after filepath.Join
+	// still preserves nested directories on Windows (where Join uses `\`).
+	rawParts := strings.Split(strings.ReplaceAll(v, `\`, "/"), "/")
+	parts := make([]string, 0, len(rawParts))
+	for _, rawPart := range rawParts {
+		part := strings.TrimSpace(rawPart)
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			return "", fmt.Errorf("resolved path contains parent traversal: %s", v)
+		}
+		part = sanitizeFilenameValue(part)
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("resolved path contains an invalid component: %s", v)
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return "", fmt.Errorf("resolved filename is empty after sanitization")
+	}
+	return filepath.Join(parts...), nil
+}
+
+func urlPathTemplateValues(downloadURL string, fallbackName string) (string, string, error) {
+	u, err := url.Parse(downloadURL)
+	if err != nil {
+		return "", "", fmt.Errorf("parse download URL path: %w", err)
+	}
+
+	rawSegments := strings.Split(u.EscapedPath(), "/")
+	segments := make([]string, 0, len(rawSegments))
+	for _, rawSegment := range rawSegments {
+		if rawSegment == "" {
+			continue
+		}
+		segment, err := url.PathUnescape(rawSegment)
+		if err != nil {
+			return "", "", fmt.Errorf("decode download URL path component: %w", err)
+		}
+		if segment == "." || segment == ".." {
+			return "", "", fmt.Errorf("download URL path contains traversal component: %s", downloadURL)
+		}
+		segment = sanitizeFilenameValue(segment)
+		if segment == "" || segment == "." || segment == ".." {
+			return "", "", fmt.Errorf("download URL path contains an invalid component: %s", downloadURL)
+		}
+		segments = append(segments, segment)
+	}
+
+	if len(segments) == 0 {
+		fallback := sanitizeFilenameValue(fallbackName)
+		if fallback == "" {
+			return "", "", fmt.Errorf("download URL path does not contain a usable filename: %s", downloadURL)
+		}
+		segments = append(segments, fallback)
+	}
+
+	urlPath := strings.Join(segments, "/")
+	return urlPath, path.Dir(urlPath), nil
 }
 
 func applyExtension(filename string, ext string) string {
@@ -338,12 +450,12 @@ func metadataPathFor(filePath string) string {
 	return base + "_metadata.json"
 }
 
-func writeMetadata(path string, metadata Metadata) error {
+func writeMetadata(root *os.Root, name string, metadata Metadata) error {
 	b, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	if err := root.WriteFile(name, b, 0o644); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 	return nil

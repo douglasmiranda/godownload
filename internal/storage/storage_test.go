@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -84,8 +85,13 @@ func TestSave_FilenameCannotTraverseBaseDir(t *testing.T) {
 func TestOpenTargetRejectsPathOutsideBaseDir(t *testing.T) {
 	dir := t.TempDir()
 	task := &config.DownloadTask{}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
 
-	f, _, _, _, err := openTarget(dir, "../escape.txt", task)
+	f, _, _, _, err := openTarget(root, dir, "../escape.txt", task)
 	if err == nil {
 		if f != nil {
 			f.Close()
@@ -375,4 +381,214 @@ func TestSave_TemplateDomainVariable(t *testing.T) {
 	if !strings.HasSuffix(res.SavedFileName, ".zip") {
 		t.Fatalf("expected saved filename to keep extension, got %q", res.SavedFileName)
 	}
+}
+
+func TestSave_TemplateURLPathCreatesNestedDirectories(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/index",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.URL_PATH}}",
+			SaveMetadata:     true,
+		},
+	}
+	downloadURL := "https://example.com/media/publicacoes/2026/7/24/file.pdf?token=secret#page=1"
+
+	res, err := Save("task1", task, downloadURL, []byte("pdf"), "application/pdf")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	relativeName := filepath.Join("media", "publicacoes", "2026", "7", "24", "file.pdf")
+	expectedPath := filepath.Join(dir, relativeName)
+	if res.SavedFileName != relativeName {
+		t.Fatalf("expected saved relative path %q, got %q", relativeName, res.SavedFileName)
+	}
+	if res.FilePath != expectedPath {
+		t.Fatalf("expected file path %q, got %q", expectedPath, res.FilePath)
+	}
+	if string(mustReadFile(t, expectedPath)) != "pdf" {
+		t.Fatal("saved file content did not match")
+	}
+	expectedMetadataPath := filepath.Join(dir, "media", "publicacoes", "2026", "7", "24", "file_metadata.json")
+	if res.MetadataPath != expectedMetadataPath {
+		t.Fatalf("expected metadata path %q, got %q", expectedMetadataPath, res.MetadataPath)
+	}
+	if _, err := os.Stat(expectedMetadataPath); err != nil {
+		t.Fatalf("expected nested metadata file: %v", err)
+	}
+}
+
+func TestSave_TemplateURLDirWithOriginalFilename(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/index",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.URL_DIR}}/copy_{{.ORIGINAL_FILENAME}}",
+		},
+	}
+
+	res, err := Save("task1", task, "https://example.com/a/b/file.txt?version=2", []byte("data"), "text/plain")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expectedName := filepath.Join("a", "b", "copy_file.txt")
+	if res.SavedFileName != expectedName {
+		t.Fatalf("expected URL_DIR output %q, got %q", expectedName, res.SavedFileName)
+	}
+}
+
+func TestSave_TemplateURLDirSupportsTopLevelFile(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/file.txt",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.URL_DIR}}/{{.ORIGINAL_FILENAME}}",
+		},
+	}
+
+	res, err := Save("task1", task, "https://example.com/file.txt", []byte("data"), "text/plain")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.SavedFileName != "file.txt" {
+		t.Fatalf("expected top-level filename, got %q", res.SavedFileName)
+	}
+}
+
+func TestSave_NestedTemplateCollisionAddsSuffixToLeaf(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:           "https://example.com/a/file.pdf",
+		ForceDownload: true,
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.URL_PATH}}",
+		},
+	}
+
+	if _, err := Save("task1", task, task.URL, []byte("first"), "application/pdf"); err != nil {
+		t.Fatalf("first save failed: %v", err)
+	}
+	res, err := Save("task1", task, task.URL, []byte("second"), "application/pdf")
+	if err != nil {
+		t.Fatalf("second save failed: %v", err)
+	}
+	expectedName := filepath.Join("a", "file_1.pdf")
+	if res.SavedFileName != expectedName {
+		t.Fatalf("expected nested collision name %q, got %q", expectedName, res.SavedFileName)
+	}
+}
+
+func TestResolveTarget_RejectsTemplateTraversal(t *testing.T) {
+	task := &config.DownloadTask{
+		URL: "https://example.com/file.txt",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  t.TempDir(),
+			FilenameTemplate: "../../{{.ORIGINAL_FILENAME}}",
+		},
+	}
+
+	if _, err := ResolveTarget(task, task.URL); err == nil {
+		t.Fatal("expected parent traversal to be rejected")
+	}
+}
+
+func TestResolveTarget_RejectsEncodedURLTraversal(t *testing.T) {
+	task := &config.DownloadTask{
+		URL: "https://example.com/safe/%2e%2e/file.txt",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  t.TempDir(),
+			FilenameTemplate: "{{.URL_PATH}}",
+		},
+	}
+
+	if _, err := ResolveTarget(task, task.URL); err == nil {
+		t.Fatal("expected encoded URL traversal to be rejected")
+	}
+}
+
+func TestSanitizeRelativePath_PreservesBackslashSeparatedHierarchy(t *testing.T) {
+	// Simulates the second sanitizeRelativePath pass after filepath.Join on Windows.
+	got, err := sanitizeRelativePath(`media\publicacoes\2026\file.pdf`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := filepath.Join("media", "publicacoes", "2026", "file.pdf")
+	if got != expected {
+		t.Fatalf("expected nested path %q, got %q", expected, got)
+	}
+}
+
+func TestResolveFilename_SecondSanitizeKeepsNestedPath(t *testing.T) {
+	task := &config.DownloadTask{
+		URL: "https://example.com/media/publicacoes/2026/file.pdf",
+		Save: config.SaveConfig{
+			FilenameTemplate: "{{.URL_PATH}}",
+			Extension:        "pdf",
+		},
+	}
+
+	got, err := resolveFilename(task, task.URL, "file.pdf")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := filepath.Join("media", "publicacoes", "2026", "file.pdf")
+	if got != expected {
+		t.Fatalf("expected nested path %q, got %q", expected, got)
+	}
+}
+
+func TestSave_URLPathEncodedSeparatorDoesNotCreateHierarchy(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/a%2Fb/file.txt",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.URL_PATH}}",
+		},
+	}
+
+	res, err := Save("task1", task, task.URL, []byte("data"), "text/plain")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expectedName := filepath.Join("a_b", "file.txt")
+	if res.SavedFileName != expectedName {
+		t.Fatalf("expected encoded slash to remain within one component %q, got %q", expectedName, res.SavedFileName)
+	}
+}
+
+func TestSave_URLPathCannotEscapeThroughSymlink(t *testing.T) {
+	baseDir := t.TempDir()
+	outsideDir := t.TempDir()
+	if err := os.Symlink(outsideDir, filepath.Join(baseDir, "linked")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	task := &config.DownloadTask{
+		URL: "https://example.com/linked/file.txt",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  baseDir,
+			FilenameTemplate: "{{.URL_PATH}}",
+		},
+	}
+
+	if _, err := Save("task1", task, task.URL, []byte("data"), "text/plain"); err == nil {
+		t.Fatal("expected symlink escape to be rejected")
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no file outside base directory, got error %v", err)
+	}
+}
+
+func mustReadFile(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

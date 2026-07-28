@@ -40,10 +40,12 @@ config:
     # relative or absolute path
     base_download_dir: ./custom-downloads
     # base_download_dir: $BASE_DOWNLOAD_DIR
-    # the filename template for the downloaded files (optional, default is the original filename from the URL)
-    # it can include placeholders for the original filename, the options are:
+    # the relative output path template for downloaded files (optional, default is the original filename from the URL)
+    # parent directories are created as needed; it can include these placeholders:
     # - {{.ORIGINAL_FILENAME}}: the original filename from the URL (e.g. file.zip)
     # - {{.URL}}: the full URL of the file being downloaded, sanitized for filesystem-safe filenames (e.g. https_example.com_file.zip)
+    # - {{.URL_PATH}}: the relative URL path including the filename, with no query or fragment (e.g. files/2026/file.zip)
+    # - {{.URL_DIR}}: the relative URL directory, or "." for a top-level file (e.g. files/2026)
     # - {{.DOMAIN}}: the URL hostname/domain of the file being downloaded (e.g. example.com)
     # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
     # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
@@ -240,16 +242,25 @@ downloads:
   example_filename_template:
     url: https://example.com/file.zip
     save:
-      # the filename template for the downloaded file (optional, default is the original filename from the URL)
-      # it can include placeholders for the original filename, the options are:
+      # the relative output path template for the downloaded file (optional, default is the original filename from the URL)
+      # parent directories are created as needed; it can include these placeholders:
       # - {{.ORIGINAL_FILENAME}}: the original filename from the URL (e.g. file.zip)
       # - {{.URL}}: the full URL of the file being downloaded, sanitized for filesystem-safe filenames (e.g. https___example.com_file.zip)
+      # - {{.URL_PATH}}: the relative URL path including the filename, with no query or fragment (e.g. files/2026/file.zip)
+      # - {{.URL_DIR}}: the relative URL directory, or "." for a top-level file (e.g. files/2026)
       # - {{.DOMAIN}}: the URL hostname/domain of the file being downloaded (e.g. example.com)
       # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
       # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
       # - {{.TIME}}: the time of the download (e.g. 12-00-00)
       # - {{.UUID}}: a unique identifier for the download (e.g. 550e8400-e29b-41d4-a716-446655440000)
       filename_template: "downloaded_{{.ORIGINAL_FILENAME}}_{{.TIMESTAMP}}"
+
+  # mirror the URL path below base_download_dir
+  example_mirror_url_path:
+    url: https://example.com/media/publicacoes/2026/7/24/file.pdf?version=1
+    save:
+      # saves ./custom-downloads/media/publicacoes/2026/7/24/file.pdf
+      filename_template: "{{.URL_PATH}}"
 
   # set extension for the downloaded file
   example_set_extension:
