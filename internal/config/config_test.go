@@ -22,6 +22,28 @@ func TestLoadBytes_ValidMinimalConfig(t *testing.T) {
 	}
 }
 
+func TestLoadBytes_DuplicateTaskNameShowsFriendlyError(t *testing.T) {
+	data := []byte(`downloads:
+  pdfs:
+    url: https://example.com/first.pdf
+  pdfs:
+    url: https://example.com/second.pdf
+`)
+
+	_, _, err := LoadBytes(data)
+	if err == nil {
+		t.Fatal("expected duplicate task name error")
+	}
+
+	message := err.Error()
+	if !strings.Contains(message, `task "pdfs" already defined at line 2`) {
+		t.Fatalf("expected friendly duplicate task error, got %q", message)
+	}
+	if strings.Contains(message, "mapping key") {
+		t.Fatalf("expected yaml mapping terminology to be hidden, got %q", message)
+	}
+}
+
 func TestLoadBytes_MutuallyExclusiveURLGenerators(t *testing.T) {
 	data := []byte(`
 downloads:

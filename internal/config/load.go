@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -48,6 +49,9 @@ func loadConfig(data []byte, configDir string) (*Config, []Diagnostic, error) {
 func parseConfig(data []byte) (*Config, error) {
 	cfg := &Config{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
+		if duplicateErrors := duplicateDownloadTaskErrors(data); len(duplicateErrors) > 0 {
+			return nil, fmt.Errorf("parse yaml: %s", strings.Join(duplicateErrors, "; "))
+		}
 		return nil, fmt.Errorf("parse yaml: %w", err)
 	}
 
@@ -57,4 +61,37 @@ func parseConfig(data []byte) (*Config, error) {
 
 	applyDefaults(cfg)
 	return cfg, nil
+}
+
+func duplicateDownloadTaskErrors(data []byte) []string {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil || len(document.Content) == 0 {
+		return nil
+	}
+
+	root := document.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	var duplicateErrors []string
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key, value := root.Content[i], root.Content[i+1]
+		if key.Value != "downloads" || value.Kind != yaml.MappingNode {
+			continue
+		}
+
+		firstDefinitionLines := make(map[string]int)
+		for j := 0; j+1 < len(value.Content); j += 2 {
+			taskName := value.Content[j]
+			if firstLine, exists := firstDefinitionLines[taskName.Value]; exists {
+				duplicateErrors = append(duplicateErrors,
+					fmt.Sprintf("task %q already defined at line %d", taskName.Value, firstLine))
+				continue
+			}
+			firstDefinitionLines[taskName.Value] = taskName.Line
+		}
+	}
+
+	return duplicateErrors
 }
