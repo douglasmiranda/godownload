@@ -86,7 +86,8 @@ func duplicateDownloadTaskErrors(data []byte) []string {
 			taskName := value.Content[j]
 			if firstLine, exists := firstDefinitionLines[taskName.Value]; exists {
 				duplicateErrors = append(duplicateErrors,
-					fmt.Sprintf("task %q already defined at line %d", taskName.Value, firstLine))
+					fmt.Sprintf("task %q redefined at line %d (already defined at line %d)",
+						taskName.Value, taskName.Line, firstLine))
 				continue
 			}
 			firstDefinitionLines[taskName.Value] = taskName.Line

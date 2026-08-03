@@ -36,7 +36,7 @@ func TestLoadBytes_DuplicateTaskNameShowsFriendlyError(t *testing.T) {
 	}
 
 	message := err.Error()
-	if !strings.Contains(message, `task "pdfs" already defined at line 2`) {
+	if !strings.Contains(message, `task "pdfs" redefined at line 4 (already defined at line 2)`) {
 		t.Fatalf("expected friendly duplicate task error, got %q", message)
 	}
 	if strings.Contains(message, "mapping key") {
