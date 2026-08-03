@@ -49,6 +49,7 @@ config:
     # - {{.DOMAIN}}: the URL hostname/domain of the file being downloaded (e.g. example.com)
     # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
     # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
+    # - {{.DATE_DIR}}: the UTC date as nested directories (e.g. 2022/01/01)
     # - {{.TIME}}: the time of the download (e.g. 12-00-00)
     # - {{.UUID}}: a unique identifier for the download (e.g. 550e8400-e29b-41d4-a716-446655440000)
     filename_template: "{{.ORIGINAL_FILENAME}}" # default is the original filename from the URL
@@ -251,6 +252,7 @@ downloads:
       # - {{.DOMAIN}}: the URL hostname/domain of the file being downloaded (e.g. example.com)
       # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
       # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
+      # - {{.DATE_DIR}}: the UTC date as nested directories (e.g. 2022/01/01)
       # - {{.TIME}}: the time of the download (e.g. 12-00-00)
       # - {{.UUID}}: a unique identifier for the download (e.g. 550e8400-e29b-41d4-a716-446655440000)
       filename_template: "downloaded_{{.ORIGINAL_FILENAME}}_{{.TIMESTAMP}}"

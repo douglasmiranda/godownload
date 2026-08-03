@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/douglasmiranda/godownload/internal/config"
 )
@@ -380,6 +381,33 @@ func TestSave_TemplateDomainVariable(t *testing.T) {
 	}
 	if !strings.HasSuffix(res.SavedFileName, ".zip") {
 		t.Fatalf("expected saved filename to keep extension, got %q", res.SavedFileName)
+	}
+}
+
+func TestSave_TemplateDateDirCreatesUTCDateDirectories(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/file.gz",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.DATE_DIR}}/{{.ORIGINAL_FILENAME}}",
+		},
+	}
+	dateBefore := time.Now().UTC().Format("2006/01/02")
+
+	res, err := Save("task1", task, task.URL, []byte("data"), "application/gzip")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dateAfter := time.Now().UTC().Format("2006/01/02")
+	expectedBefore := filepath.Join(dateBefore, "file.gz")
+	expectedAfter := filepath.Join(dateAfter, "file.gz")
+	if res.SavedFileName != expectedBefore && res.SavedFileName != expectedAfter {
+		t.Fatalf("expected UTC date directory %q or %q, got %q", expectedBefore, expectedAfter, res.SavedFileName)
+	}
+	if _, err := os.Stat(res.FilePath); err != nil {
+		t.Fatalf("expected file in UTC date directory: %v", err)
 	}
 }
 

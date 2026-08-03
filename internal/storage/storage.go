@@ -267,15 +267,17 @@ func resolveFilename(task *config.DownloadTask, downloadURL string, originalName
 		}
 		urlPath, urlDir = resolvedURLPath, resolvedURLDir
 	}
+	now := time.Now().UTC()
 	vars := map[string]string{
 		"ORIGINAL_FILENAME": sanitizeFilenameValue(originalName),
 		"URL":               sanitizeFilenameValue(downloadURL),
 		"URL_PATH":          urlPath,
 		"URL_DIR":           urlDir,
 		"DOMAIN":            domainFromURL(downloadURL),
-		"TIMESTAMP":         time.Now().UTC().Format(time.RFC3339),
-		"DATE":              time.Now().UTC().Format("2006-01-02"),
-		"TIME":              time.Now().UTC().Format("15-04-05"),
+		"TIMESTAMP":         now.Format(time.RFC3339),
+		"DATE":              now.Format("2006-01-02"),
+		"DATE_DIR":          now.Format("2006/01/02"),
+		"TIME":              now.Format("15-04-05"),
 		"UUID":              uuid.NewString(),
 	}
 

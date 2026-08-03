@@ -43,13 +43,14 @@ downloads:
       # - {{.DOMAIN}}: the URL hostname/domain of the file being downloaded (e.g. example.com)
       # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
       # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
+      # - {{.DATE_DIR}}: the UTC date as nested directories (e.g. 2022/01/01)
       # - {{.TIME}}: the time of the download (e.g. 12-00-00)
       # - {{.UUID}}: a unique identifier for the download (e.g. 550e8400-e29b-41d4-a716-446655440000)
       # Let's use all of them in the filename:
-      filename_template: "download_and_rename_with_template_{{.DOMAIN}}_{{.DATE}}_{{.TIME}}_{{.TIMESTAMP}}_{{.UUID}}_{{.ORIGINAL_FILENAME}}_{{.URL}}"
+      filename_template: "{{.DATE_DIR}}/download_and_rename_with_template_{{.DOMAIN}}_{{.DATE}}_{{.TIME}}_{{.TIMESTAMP}}_{{.UUID}}_{{.ORIGINAL_FILENAME}}_{{.URL}}"
     hooks:
       on_success:
-        command: find d-files/ -maxdepth 1 -type f -name "download_and_rename_with_template_*.txt" -print -quit | grep -q .
+        command: find d-files/ -mindepth 4 -maxdepth 4 -type f -name "download_and_rename_with_template_*.txt" -print -quit | grep -q .
 
   # mirror the URL path below base_download_dir
   mirror_url_path:

@@ -558,6 +558,7 @@ Use this when output naming, collisions, and metadata need strict control.
 | `{{.DOMAIN}}` | URL hostname | `example.com` |
 | `{{.TIMESTAMP}}` | UTC RFC3339 timestamp | `2026-03-31T01:02:23Z` |
 | `{{.DATE}}` | UTC date | `2026-03-31` |
+| `{{.DATE_DIR}}` | UTC date as nested year/month/day directories | `2026/03/31` |
 | `{{.TIME}}` | UTC time | `01-02-23` |
 | `{{.UUID}}` | Random UUID | `bd80e0d3-ec89-4458-af5c-857f21cccb89` |
 
@@ -568,10 +569,13 @@ Minimal example:
 ```yaml
 downloads:
   named_output:
-    url: https://example.com/file.pdf
+    url: https://example.com/file.gz
     save:
-      filename_template: "{{.DATE}}_{{.ORIGINAL_FILENAME}}"
+      base_download_dir: ./files
+      filename_template: "{{.DATE_DIR}}/{{.ORIGINAL_FILENAME}}"
 ```
+
+This saves `./files/2026/03/31/file.gz` when the current UTC date is March 31, 2026.
 
 Mirror a URL path below the base directory:
 
