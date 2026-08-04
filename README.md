@@ -2,6 +2,12 @@
 
 A CLI tool to download files from URLs. It can be used to download files given a static URL, a URL generated dynamically or URLs found in HTML pages.
 
+## About the project
+
+It's mostly a personal software built with AI. I am not a Go developer. It is a very useful tool so I decided to share it with the world.
+
+I prefer to receive feedback via issues than pull requests for this project.
+
 ## Config Examples
 
 ### 1) Simple: one URL
@@ -68,15 +74,10 @@ downloads:
       save_metadata: true
 ```
 
-
-
 ## Full Documentation
 
 For complete option reference, defaults, interactions, and validation behavior, see [DOWNLOAD.md](DOWNLOAD.md).
 
-## Status
-
-Prebuilt binaries are published through [GitHub Releases](https://github.com/douglasmiranda/godownload/releases).
 
 ## Installation
 
