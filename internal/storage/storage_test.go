@@ -384,7 +384,7 @@ func TestSave_TemplateDomainVariable(t *testing.T) {
 	}
 }
 
-func TestSave_TemplateDateDirCreatesUTCDateDirectories(t *testing.T) {
+func TestSave_TemplateDateDirCreatesLocalDateDirectories(t *testing.T) {
 	dir := t.TempDir()
 	task := &config.DownloadTask{
 		URL: "https://example.com/file.gz",
@@ -393,21 +393,21 @@ func TestSave_TemplateDateDirCreatesUTCDateDirectories(t *testing.T) {
 			FilenameTemplate: "{{.DATE_DIR}}/{{.ORIGINAL_FILENAME}}",
 		},
 	}
-	dateBefore := time.Now().UTC().Format("2006/01/02")
+	dateBefore := time.Now().Format("2006/01/02")
 
 	res, err := Save("task1", task, task.URL, []byte("data"), "application/gzip")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	dateAfter := time.Now().UTC().Format("2006/01/02")
+	dateAfter := time.Now().Format("2006/01/02")
 	expectedBefore := filepath.Join(dateBefore, "file.gz")
 	expectedAfter := filepath.Join(dateAfter, "file.gz")
 	if res.SavedFileName != expectedBefore && res.SavedFileName != expectedAfter {
-		t.Fatalf("expected UTC date directory %q or %q, got %q", expectedBefore, expectedAfter, res.SavedFileName)
+		t.Fatalf("expected local date directory %q or %q, got %q", expectedBefore, expectedAfter, res.SavedFileName)
 	}
 	if _, err := os.Stat(res.FilePath); err != nil {
-		t.Fatalf("expected file in UTC date directory: %v", err)
+		t.Fatalf("expected file in local date directory: %v", err)
 	}
 }
 

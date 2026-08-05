@@ -41,10 +41,10 @@ downloads:
       # - {{.ORIGINAL_FILENAME}}: the original filename from the URL (e.g. file.zip)
       # - {{.URL}}: the full URL of the file being downloaded, sanitized for filesystem-safe filenames (e.g. https_example.com_file.zip)
       # - {{.DOMAIN}}: the URL hostname/domain of the file being downloaded (e.g. example.com)
-      # - {{.TIMESTAMP}}: the timestamp of the download (e.g. 2022-01-01T12:00:00Z)
-      # - {{.DATE}}: the date of the download (e.g. 2022-01-01)
-      # - {{.DATE_DIR}}: the UTC date as nested directories (e.g. 2022/01/01)
-      # - {{.TIME}}: the time of the download (e.g. 12-00-00)
+      # - {{.TIMESTAMP}}: the timestamp of the download in the process local timezone (e.g. 2022-01-01T12:00:00-04:00)
+      # - {{.DATE}}: the date of the download in the process local timezone (e.g. 2022-01-01)
+      # - {{.DATE_DIR}}: the date in the process local timezone as nested directories (e.g. 2022/01/01)
+      # - {{.TIME}}: the time of the download in the process local timezone (e.g. 12-00-00)
       # - {{.UUID}}: a unique identifier for the download (e.g. 550e8400-e29b-41d4-a716-446655440000)
       # Let's use all of them in the filename:
       filename_template: "{{.DATE_DIR}}/download_and_rename_with_template_{{.DOMAIN}}_{{.DATE}}_{{.TIME}}_{{.TIMESTAMP}}_{{.UUID}}_{{.ORIGINAL_FILENAME}}_{{.URL}}"

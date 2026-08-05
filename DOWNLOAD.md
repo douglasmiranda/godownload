@@ -556,10 +556,10 @@ Use this when output naming, collisions, and metadata need strict control.
 | `{{.URL_PATH}}` | Sanitized relative URL path, including filename; excludes query and fragment | `files/2026/report.pdf` |
 | `{{.URL_DIR}}` | Parent directory of `URL_PATH`; `.` for a top-level file | `files/2026` |
 | `{{.DOMAIN}}` | URL hostname | `example.com` |
-| `{{.TIMESTAMP}}` | UTC RFC3339 timestamp | `2026-03-31T01:02:23Z` |
-| `{{.DATE}}` | UTC date | `2026-03-31` |
-| `{{.DATE_DIR}}` | UTC date as nested year/month/day directories | `2026/03/31` |
-| `{{.TIME}}` | UTC time | `01-02-23` |
+| `{{.TIMESTAMP}}` | RFC3339 timestamp in the process local timezone | `2026-03-31T01:02:23-04:00` |
+| `{{.DATE}}` | Date in the process local timezone | `2026-03-31` |
+| `{{.DATE_DIR}}` | Date in the process local timezone as nested year/month/day directories | `2026/03/31` |
+| `{{.TIME}}` | Time in the process local timezone | `01-02-23` |
 | `{{.UUID}}` | Random UUID | `bd80e0d3-ec89-4458-af5c-857f21cccb89` |
 
 `filename_template` may contain relative directories. Every path component is sanitized, and the resolved output is confined to `base_download_dir`. Absolute paths, parent traversal (`..`), and URL path traversal are rejected. `URL_PATH` and `URL_DIR` use the candidate download URL before the request; redirects do not change the already resolved destination.
@@ -575,7 +575,7 @@ downloads:
       filename_template: "{{.DATE_DIR}}/{{.ORIGINAL_FILENAME}}"
 ```
 
-This saves `./files/2026/03/31/file.gz` when the current UTC date is March 31, 2026.
+This saves `./files/2026/03/31/file.gz` when the current date in the process local timezone is March 31, 2026. Set the `TZ` environment variable when starting godownload to control this timezone.
 
 Mirror a URL path below the base directory:
 
@@ -716,7 +716,7 @@ When `save.save_metadata: true`, a JSON file is written beside the downloaded fi
 | `download_url` | `string` | Final URL used for request. |
 | `original_filename` | `string` | Filename inferred from URL path. |
 | `saved_filename` | `string` | Final path relative to `base_download_dir` after template/extension/collision resolution. |
-| `timestamp` | `string` | UTC RFC3339 save timestamp. |
+| `timestamp` | `string` | RFC3339 save timestamp in the process local timezone. |
 | `size` | `number` | Downloaded byte size. |
 | `mime_type` | `string` | Response `Content-Type`. |
 | `download_task_name` | `string` | Task key under `downloads`. |

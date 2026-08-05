@@ -100,7 +100,7 @@ func SaveToTarget(taskName string, task *config.DownloadTask, downloadURL string
 			DownloadURL:      downloadURL,
 			OriginalFileName: target.originalName,
 			SavedFileName:    finalName,
-			Timestamp:        time.Now().UTC().Format(time.RFC3339),
+			Timestamp:        time.Now().Format(time.RFC3339),
 			Size:             int64(len(content)),
 			MIMEType:         contentType,
 			DownloadTaskName: taskName,
@@ -267,7 +267,7 @@ func resolveFilename(task *config.DownloadTask, downloadURL string, originalName
 		}
 		urlPath, urlDir = resolvedURLPath, resolvedURLDir
 	}
-	now := time.Now().UTC()
+	now := time.Now()
 	vars := map[string]string{
 		"ORIGINAL_FILENAME": sanitizeFilenameValue(originalName),
 		"URL":               sanitizeFilenameValue(downloadURL),
