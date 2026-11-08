@@ -32,7 +32,6 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 	expandField("config.attr", &cfg.Config.Attr, globalVars, "", &diags)
 	expandField("config.regex_filter", &cfg.Config.RegexFilter, globalVars, "", &diags)
 	expandField("config.attr_val_regex_filter", &cfg.Config.AttrValRegexFilter, globalVars, "", &diags)
-	expandField("config.base_download_dir", &cfg.Config.BaseDownloadDir, globalVars, "", &diags)
 	if cfg.Config.URLGenFile != nil {
 		expandField("config.url_gen_file.file", &cfg.Config.URLGenFile.File, globalVars, "", &diags)
 	}
@@ -57,13 +56,15 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 
 		taskVars := gdEnv.MergeWithPrecedence(globalVars, cfg.Config.Env, task.Env)
 		task.HookConfigDir = configDir
-		task.HookEnv = copyStringMap(taskVars)
+		// Hooks already inherit the process environment; HookEnv holds only
+		// what the config defines, so a SHELL from the login session does not
+		// choose the hook shell.
+		task.HookEnv = gdEnv.MergeWithPrecedence(envFileVars, cfg.Env, cfg.Config.Env, task.Env)
 		expandField("url", &task.URL, taskVars, name, &diags)
 		expandField("selector", &task.Selector, taskVars, name, &diags)
 		expandField("attr", &task.Attr, taskVars, name, &diags)
 		expandField("regex_filter", &task.RegexFilter, taskVars, name, &diags)
 		expandField("attr_val_regex_filter", &task.AttrValRegexFilter, taskVars, name, &diags)
-		expandField("base_download_dir", &task.BaseDownloadDir, taskVars, name, &diags)
 		expandField("save.base_download_dir", &task.Save.BaseDownloadDir, taskVars, name, &diags)
 		expandField("save.filename_template", &task.Save.FilenameTemplate, taskVars, name, &diags)
 		expandField("save.filename", &task.Save.Filename, taskVars, name, &diags)
@@ -92,9 +93,6 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 	}
 
 	cfg.Config.Save.BaseDownloadDir = toAbsoluteOrURL(cfg.Config.Save.BaseDownloadDir, configDir)
-	if cfg.Config.BaseDownloadDir != "" {
-		cfg.Config.BaseDownloadDir = toAbsoluteOrURL(cfg.Config.BaseDownloadDir, configDir)
-	}
 	if cfg.Config.URLGenFile != nil && cfg.Config.URLGenFile.File != "" {
 		cfg.Config.URLGenFile.File = toAbsoluteOrURL(cfg.Config.URLGenFile.File, configDir)
 	}
@@ -103,9 +101,6 @@ func resolveEnvAndExpand(cfg *Config, configDir string) ([]Diagnostic, error) {
 			continue
 		}
 		task.Save.BaseDownloadDir = toAbsoluteOrURL(task.Save.BaseDownloadDir, configDir)
-		if task.BaseDownloadDir != "" {
-			task.BaseDownloadDir = toAbsoluteOrURL(task.BaseDownloadDir, configDir)
-		}
 	}
 
 	return diags, nil
@@ -121,17 +116,6 @@ func expandHookCommands(prefix string, hooks *HooksConfig, vars map[string]strin
 	if hooks.OnFailure != nil {
 		expandField(prefix+".on_failure.command", &hooks.OnFailure.Command, vars, taskName, diags)
 	}
-}
-
-func copyStringMap(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
 }
 
 func toAbsoluteOrURL(v string, baseDir string) string {

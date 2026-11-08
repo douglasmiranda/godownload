@@ -1,14 +1,17 @@
 package storage
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/douglasmiranda/godownload/internal/config"
 )
@@ -54,6 +57,15 @@ func TestSave_ConcurrentSameNameNoDataLoss(t *testing.T) {
 	if len(files) != n {
 		t.Fatalf("expected %d distinct files, got %d", n, len(files))
 	}
+	contents := map[string]bool{}
+	for _, f := range files {
+		contents[string(mustReadFile(t, f))] = true
+	}
+	for i := 0; i < n; i++ {
+		if !contents[fmt.Sprintf("content-%d", i)] {
+			t.Fatalf("content-%d was lost", i)
+		}
+	}
 }
 
 func TestSave_FilenameCannotTraverseBaseDir(t *testing.T) {
@@ -83,24 +95,6 @@ func TestSave_FilenameCannotTraverseBaseDir(t *testing.T) {
 	}
 }
 
-func TestOpenTargetRejectsPathOutsideBaseDir(t *testing.T) {
-	dir := t.TempDir()
-	task := &config.DownloadTask{}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-
-	f, _, _, _, err := openTarget(root, dir, "../escape.txt", task)
-	if err == nil {
-		if f != nil {
-			f.Close()
-		}
-		t.Fatal("expected path containment error")
-	}
-}
-
 func TestSave_WritesFileAndMetadata(t *testing.T) {
 	dir := t.TempDir()
 	task := &config.DownloadTask{
@@ -110,18 +104,71 @@ func TestSave_WritesFileAndMetadata(t *testing.T) {
 			SaveMetadata:    true,
 		},
 	}
-	result, err := Save("task1", task, "https://example.com/a.pdf", []byte("hello"), "application/pdf")
+	result, err := Save("task1", task, "https://example.com/a.pdf?token=1", []byte("hello"), "application/pdf")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Skipped {
 		t.Fatal("expected file to be saved")
 	}
-	if _, err := os.Stat(result.FilePath); err != nil {
-		t.Fatalf("expected file to exist: %v", err)
+	if got := string(mustReadFile(t, result.FilePath)); got != "hello" {
+		t.Fatalf("expected saved content %q, got %q", "hello", got)
 	}
-	if _, err := os.Stat(result.MetadataPath); err != nil {
-		t.Fatalf("expected metadata to exist: %v", err)
+	const helloSHA256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+	if result.Size != 5 || result.SHA256 != helloSHA256 {
+		t.Fatalf("unexpected size/hash in result: %d %s", result.Size, result.SHA256)
+	}
+
+	var meta Metadata
+	if err := json.Unmarshal(mustReadFile(t, result.MetadataPath), &meta); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	want := Metadata{
+		MainURL:          "https://example.com/a.pdf",
+		DownloadURL:      "https://example.com/a.pdf?token=1",
+		OriginalFileName: "a.pdf",
+		SavedFileName:    "a.pdf",
+		Timestamp:        meta.Timestamp,
+		Size:             5,
+		SHA256:           helloSHA256,
+		MIMEType:         "application/pdf",
+		DownloadTaskName: "task1",
+	}
+	if meta != want {
+		t.Fatalf("unexpected metadata:\n got %+v\nwant %+v", meta, want)
+	}
+	if _, err := time.Parse(time.RFC3339, meta.Timestamp); err != nil {
+		t.Fatalf("metadata timestamp is not RFC3339: %q", meta.Timestamp)
+	}
+	assertNoTempFiles(t, dir)
+}
+
+func TestSaveToTarget_FailedBodyLeavesNoFile(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:  "https://example.com/a.pdf",
+		Save: config.SaveConfig{BaseDownloadDir: dir, SaveMetadata: true},
+	}
+	target, err := ResolveTarget(task, task.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := io.MultiReader(strings.NewReader("partial data"), errReader{errors.New("connection reset")})
+	if _, err := SaveToTarget("task1", task, task.URL, target, body, "application/pdf"); err == nil {
+		t.Fatal("expected error from failing body")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("expected no files after failed download, found %v", names)
 	}
 }
 
@@ -141,6 +188,90 @@ func TestSave_SkipWhenExistsAndNotForced(t *testing.T) {
 	}
 	if !result.Skipped {
 		t.Fatal("expected save to be skipped")
+	}
+	if got := string(mustReadFile(t, target)); got != "old" {
+		t.Fatalf("expected existing file to be untouched, got %q", got)
+	}
+	assertNoTempFiles(t, dir)
+}
+
+func TestSanitizeFilenameValue_LongNamesAreTruncatedAndDistinct(t *testing.T) {
+	a := sanitizeFilenameValue(strings.Repeat("a", 300) + "1.pdf")
+	b := sanitizeFilenameValue(strings.Repeat("a", 300) + "2.pdf")
+	if len(a) > maxComponentBytes || len(b) > maxComponentBytes {
+		t.Fatalf("expected names <= %d bytes, got %d and %d", maxComponentBytes, len(a), len(b))
+	}
+	if a == b {
+		t.Fatalf("expected distinct truncated names, both are %q", a)
+	}
+	if !strings.HasSuffix(a, ".pdf") {
+		t.Fatalf("expected extension to be kept, got %q", a)
+	}
+	if again := sanitizeFilenameValue(a); again != a {
+		t.Fatalf("expected truncation to be stable, got %q then %q", a, again)
+	}
+
+	multiByte := sanitizeFilenameValue(strings.Repeat("é", 150) + ".txt")
+	if !utf8.ValidString(multiByte) || len(multiByte) > maxComponentBytes {
+		t.Fatalf("expected valid UTF-8 within limit, got %q (%d bytes)", multiByte, len(multiByte))
+	}
+}
+
+func TestSave_LongURLFilenameIsSaved(t *testing.T) {
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL: "https://example.com/index",
+		Save: config.SaveConfig{
+			BaseDownloadDir:  dir,
+			FilenameTemplate: "{{.URL}}",
+			SaveMetadata:     true,
+		},
+	}
+	longURL := "https://example.com/file.zip?q=" + strings.Repeat("x", 400)
+	res, err := Save("task1", task, longURL, []byte("data"), "application/zip")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(filepath.Base(res.FilePath)) > maxComponentBytes {
+		t.Fatalf("expected truncated filename, got %d bytes", len(filepath.Base(res.FilePath)))
+	}
+	if _, err := os.Stat(res.MetadataPath); err != nil {
+		t.Fatalf("expected metadata next to long file: %v", err)
+	}
+}
+
+func TestSanitizeFilenameValue_WindowsReservedNames(t *testing.T) {
+	cases := map[string]string{
+		"CON":      "_CON",
+		"con.txt":  "_con.txt",
+		"Lpt1.pdf": "_Lpt1.pdf",
+		"console":  "console",
+		"nul_file": "nul_file",
+	}
+	for in, want := range cases {
+		if got := sanitizeFilenameValue(in); got != want {
+			t.Errorf("sanitizeFilenameValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+func assertNoTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(d.Name(), ".part") {
+			t.Errorf("leftover temporary file: %s", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -228,7 +359,7 @@ func TestSaveToTarget_ReusesDynamicFilename(t *testing.T) {
 		t.Fatal("expected resolved target to be missing")
 	}
 
-	result, err := SaveToTarget("task1", task, "https://example.com/a.pdf", target, []byte("new"), "application/pdf")
+	result, err := SaveToTarget("task1", task, "https://example.com/a.pdf", target, strings.NewReader("new"), "application/pdf")
 	if err != nil {
 		t.Fatalf("save target: %v", err)
 	}

@@ -2,6 +2,8 @@ module github.com/douglasmiranda/godownload
 
 go 1.26.5
 
+toolchain go1.26.10
+
 require (
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/fatih/color v1.19.0
@@ -18,6 +20,6 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
-	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 )

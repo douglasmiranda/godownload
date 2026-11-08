@@ -13,6 +13,9 @@ import (
 func Validate(cfg *Config) []Diagnostic {
 	diags := make([]Diagnostic, 0)
 
+	if cfg.Config.LogLevel != "DEBUG" && cfg.Config.LogLevel != "INFO" {
+		diags = append(diags, Diagnostic{Severity: SeverityError, Field: "config.log_level", Message: "must be one of: DEBUG, INFO"})
+	}
 	if cfg.Config.TaskConcurrency <= 0 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, Field: "config.task_concurrency", Message: "must be greater than 0"})
 	}
@@ -323,9 +326,6 @@ func validateSecurity(taskName string, sec SecurityConfig) []Diagnostic {
 	diags := make([]Diagnostic, 0)
 	if sec.MaxDownloadSize < 0 {
 		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "security.max_download_size", Message: "must be greater than or equal to 0"})
-	}
-	if sec.MaxInMemorySize < 0 {
-		diags = append(diags, Diagnostic{Severity: SeverityError, TaskName: taskName, Field: "security.max_in_memory_size", Message: "must be greater than or equal to 0"})
 	}
 	for _, domain := range sec.AllowedDomains {
 		if strings.TrimSpace(domain) == "" {

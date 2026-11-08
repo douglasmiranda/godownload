@@ -52,8 +52,9 @@ config:
     # - {{.DATE_DIR}}: the date in the process local timezone as nested directories (e.g. 2022/01/01)
     # - {{.TIME}}: the time of the download in the process local timezone (e.g. 12-00-00)
     # - {{.UUID}}: a unique identifier for the download (e.g. 550e8400-e29b-41d4-a716-446655440000)
-    filename_template: "{{.ORIGINAL_FILENAME}}" # default is the original filename from the URL
+    # filename_template: "{{.ORIGINAL_FILENAME}}" # default is the original filename from the URL
     # when "filename" is set in the download config, it will override the filename_template
+    # (setting filename_template here and filename in a task produces a "filename_template is ignored" warning)
     # filename: "custom_name.zip" # this will override the filename_template for this download
 
   # default attribute mappings for the selector
@@ -71,7 +72,7 @@ config:
   #   fail_task_if_error: false
   #   # default is 0; no timeout is applied unless this is greater than 0
   #   timeout: 0
-  #   # commands run as "$SHELL -c <command>" from the config file directory
+  #   # commands run as "/bin/sh -c <command>" from the config file directory
   #   on_complete:
   #     command: echo "download task completed"
 
@@ -299,7 +300,8 @@ downloads:
       # if stop_all_tasks is set, on_http_code is optional and unset until specifically set
       on_http_code: [404, 500, 502, 503, 504]
 
-  # timeout for the HTTP request (in seconds)
+  # seconds to wait without receiving any data (default is 30)
+  # this is not a limit on the total download time: a large file that keeps arriving is never cut off
   example_timeout:
     url: https://example.com/file.zip
     timeout: 10
@@ -337,7 +339,8 @@ downloads:
     url: https://example.com/file-that-might-fail.zip
     # the number of times to retry the download (default is 3)
     # with the delay between retries increasing exponentially (e.g. 1s, 2s, 4s, etc.)
-    # it will retry on any error (e.g. network error, file not found, timeout)
+    # it retries network errors, timeouts and HTTP 408, 425, 429, 500, 502, 503, 504
+    # (a 404 is not retried; a Retry-After header from the server is honored, up to 5 minutes)
     retry: true
 
   # retry failed downloads with a custom number of retries and delay
@@ -345,9 +348,9 @@ downloads:
     url: https://example.com/file-that-might-fail.zip
     retry:
       # errors like network errors, timeouts, etc.
-      # if retry is true, on_runtime_error will be also true
+      # default is true; fields left out of this mapping keep their defaults
       on_runtime_error: true
-      # default is to retry on any 4xx and 5xx error, but here we set it to only retry on server errors
+      # default is 408, 425, 429, 500, 502, 503, 504, but here we set it to only retry on server errors
       on_http_code: [500, 502, 503] # only retry on specific HTTP status codes (e.g. server errors)
       # default is to retry 3 times, but here we set it to 5 retries
       retries: 5
@@ -364,8 +367,9 @@ downloads:
   # use environment variables in the download configs
   example_env_var:
     url: https://example.com/file.zip
-    # use the environment variable for the base directory where the downloaded file will be saved
-    base_download_dir: $BASE_DOWNLOAD_DIR
+    save:
+      # use the environment variable for the base directory where the downloaded file will be saved
+      base_download_dir: $BASE_DOWNLOAD_DIR
 
   # override the environment variable per download config
   example_env_var_override:
@@ -373,13 +377,16 @@ downloads:
     # override the environment variable
     env:
       BASE_DOWNLOAD_DIR: "./another-downloads"
-    base_download_dir: $BASE_DOWNLOAD_DIR
+    save:
+      base_download_dir: $BASE_DOWNLOAD_DIR
 
   ################
   # AUTHENTICATION
   ################
 
   # IMPORTANT: credentials will be redacted in the logs and metadata
+  # credentials are only sent to the task URL host and to hosts in security.allowed_domains;
+  # links on other hosts (e.g. a CDN) and cross-host redirects get no credentials
 
   # use basic authentication for the download
   example_basic_auth:
@@ -421,7 +428,10 @@ downloads:
       fail_task_if_error: false
       # default is 0; no timeout is applied unless this is greater than 0
       timeout: 0
-      # commands run as "$SHELL -c <command>" from the config file directory
+      # commands run as "/bin/sh -c <command>" from the config file directory
+      # (cmd.exe on Windows); set SHELL in env to use another shell, e.g. SHELL: /bin/bash
+      # hooks get GODOWNLOAD_TASK, GODOWNLOAD_STATUS and GODOWNLOAD_RESULT_FILE (a JSON file
+      # listing saved files with path, url, size and sha256)
       on_success:
         command: echo "on_success hook executed"
       on_failure:
@@ -441,8 +451,9 @@ downloads:
   #   "saved_filename": "{{.SAVED_FILENAME}}",
   #   "timestamp": "{{.TIMESTAMP}}",
   #   "size": "{{.SIZE}}",
+  #   "sha256": "{{.SHA256}}",
   #   "mime_type": "{{.MIME_TYPE}}",
-  #  "download_task_name": "{{.TASK_NAME}}",
+  #   "download_task_name": "{{.TASK_NAME}}",
   # }
 
   # save metadata for the downloaded file
@@ -476,13 +487,14 @@ downloads:
     security:
       allow_self_signed_cert: true
 
-  # restrict domains (only allow downloading from specific domains)
+  # restrict domains (only allow downloading from specific domains and their subdomains)
   example_restrict_domains:
     url: https://example.com/file.zip
     security:
       allowed_domains: ["example.com", "another-example.com"]
 
   # restrict file types (only allow downloading files with specific extensions)
+  # links found by the selector with other extensions are skipped
   example_restrict_file_types:
     url: https://example.com/
     selector: "a"

@@ -44,50 +44,13 @@ downloads:
     url: https://example.com/file.zip
     security:
       max_download_size: 10mb
-      max_in_memory_size: 1gb
 `)
 	cfg, _, err := LoadBytes(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	sec := cfg.Downloads["d1"].Security
-	if sec.MaxDownloadSize != 10*1024*1024 {
-		t.Fatalf("expected max_download_size=10MiB, got %d", sec.MaxDownloadSize)
-	}
-	if sec.MaxInMemorySize != 1*1024*1024*1024 {
-		t.Fatalf("expected max_in_memory_size=1GiB, got %d", sec.MaxInMemorySize)
-	}
-}
-
-func TestLoadBytes_DefaultMaxInMemorySizeApplied(t *testing.T) {
-	data := []byte(`
-downloads:
-  d1:
-    url: https://example.com/file.zip
-`)
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := cfg.Downloads["d1"].Security.MaxInMemorySize; got != DefaultMaxInMemorySize {
-		t.Fatalf("expected default max_in_memory_size=%d, got %d", DefaultMaxInMemorySize, got)
-	}
-}
-
-func TestLoadBytes_MaxInMemorySizeZeroDisablesCap(t *testing.T) {
-	data := []byte(`
-downloads:
-  d1:
-    url: https://example.com/file.zip
-    security:
-      max_in_memory_size: 0
-`)
-	cfg, _, err := LoadBytes(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := cfg.Downloads["d1"].Security.MaxInMemorySize; got != 0 {
-		t.Fatalf("expected max_in_memory_size=0 (disabled), got %d", got)
+	if got := cfg.Downloads["d1"].Security.MaxDownloadSize; got != 10*1024*1024 {
+		t.Fatalf("expected max_download_size=10MiB, got %d", got)
 	}
 }
 

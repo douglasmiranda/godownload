@@ -7,11 +7,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 )
 
 const maxCapturedOutputBytes = 32 * 1024
+
+// waitDelay bounds how long Run waits for output pipes to close after the
+// hook process exits or is killed, in case it left background children.
+const waitDelay = 2 * time.Second
 
 type Runner struct {
 	Env     map[string]string
@@ -28,17 +33,14 @@ type Result struct {
 	Err      error
 }
 
-func (r Runner) Run(ctx context.Context, name string, command string, timeoutSeconds int) Result {
+// Run executes command with r.Shell, or else the SHELL in r.Env. The process
+// SHELL is deliberately ignored so hooks behave the same for every user.
+// extraEnv is added on top of the process environment and r.Env.
+func (r Runner) Run(ctx context.Context, name string, command string, timeoutSeconds int, extraEnv map[string]string) Result {
 	result := Result{Name: name, Command: command, ExitCode: 0}
 	shell := strings.TrimSpace(r.Shell)
 	if shell == "" && r.Env != nil {
 		shell = strings.TrimSpace(r.Env["SHELL"])
-	}
-	if shell == "" {
-		shell = strings.TrimSpace(os.Getenv("SHELL"))
-	}
-	if shell == "" {
-		shell = "/bin/sh"
 	}
 
 	runCtx := ctx
@@ -50,9 +52,12 @@ func (r Runner) Run(ctx context.Context, name string, command string, timeoutSec
 	}
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, shell, "-c", command)
+	program, args := shellCommand(shell, command)
+	cmd := exec.CommandContext(runCtx, program, args...)
 	cmd.Dir = r.WorkDir
-	cmd.Env = mergeEnv(os.Environ(), r.Env)
+	cmd.Env = mergeEnv(mergeEnv(os.Environ(), r.Env), extraEnv)
+	cmd.WaitDelay = waitDelay
+	killProcessGroupOnCancel(cmd)
 
 	var out limitedBuffer
 	out.limit = maxCapturedOutputBytes
@@ -70,13 +75,39 @@ func (r Runner) Run(ctx context.Context, name string, command string, timeoutSec
 		return result
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if errors.As(err, &exitErr) && ctx.Err() == nil {
 		result.ExitCode = exitErr.ExitCode()
 		result.Err = fmt.Errorf("hook %s exited with code %d", name, result.ExitCode)
 		return result
 	}
 	result.Err = fmt.Errorf("hook %s failed: %w", name, err)
 	return result
+}
+
+// shellCommand returns the program and arguments that run command. Without
+// a configured shell it uses /bin/sh, or cmd.exe on Windows.
+func shellCommand(shell string, command string) (string, []string) {
+	if shell == "" {
+		if runtime.GOOS == "windows" {
+			comspec := strings.TrimSpace(os.Getenv("ComSpec"))
+			if comspec == "" {
+				comspec = "cmd.exe"
+			}
+			return comspec, []string{"/C", command}
+		}
+		return "/bin/sh", []string{"-c", command}
+	}
+	base := shell
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	switch strings.TrimSuffix(strings.ToLower(base), ".exe") {
+	case "cmd":
+		return shell, []string{"/C", command}
+	case "powershell", "pwsh":
+		return shell, []string{"-NoProfile", "-Command", command}
+	}
+	return shell, []string{"-c", command}
 }
 
 func mergeEnv(base []string, overrides map[string]string) []string {

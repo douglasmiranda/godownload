@@ -2,12 +2,15 @@ package downloader
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -231,38 +234,6 @@ downloads:
 	}
 }
 
-func TestRunTask_RejectsDownloadExceedingMaxInMemorySize(t *testing.T) {
-	payload := "0123456789"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/pdf")
-		fmt.Fprint(w, payload)
-	}))
-	defer server.Close()
-
-	dir := t.TempDir()
-	task := &config.DownloadTask{
-		URL:  server.URL + "/file.pdf",
-		Save: config.SaveConfig{BaseDownloadDir: dir},
-		Security: config.SecurityConfig{
-			AllowedFileTypes:  []string{"pdf"},
-			AllowInsecureHTTP: true,
-			MaxInMemorySize:   4,
-		},
-	}
-
-	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
-	if len(res.Errors) == 0 {
-		t.Fatal("expected error when download exceeds max_in_memory_size")
-	}
-	if !strings.Contains(res.Errors[0].Error(), "max_in_memory_size") {
-		t.Fatalf("expected max_in_memory_size error, got %v", res.Errors[0])
-	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*"))
-	if len(files) != 0 {
-		t.Fatalf("expected nothing written to disk, got %v", files)
-	}
-}
-
 func TestRunTask_SelectorFlow(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -298,10 +269,12 @@ func TestRunTask_SelectorFlow(t *testing.T) {
 }
 
 func TestRunTask_DownloadLimitTruncatesCandidates(t *testing.T) {
-	requested := map[string]int{}
+	var secondRequests atomic.Int32
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requested[r.URL.Path]++
+		if r.URL.Path == "/second.pdf" {
+			secondRequests.Add(1)
+		}
 		switch r.URL.Path {
 		case "/":
 			w.Header().Set("Content-Type", "text/html")
@@ -330,8 +303,8 @@ func TestRunTask_DownloadLimitTruncatesCandidates(t *testing.T) {
 	if len(res.Saved) != 1 {
 		t.Fatalf("expected one saved file after download_limit, got %d", len(res.Saved))
 	}
-	if requested["/second.pdf"] != 0 {
-		t.Fatalf("expected second candidate not to be downloaded, got %d requests", requested["/second.pdf"])
+	if secondRequests.Load() != 0 {
+		t.Fatalf("expected second candidate not to be downloaded, got %d requests", secondRequests.Load())
 	}
 }
 
@@ -341,24 +314,25 @@ func TestRunTask_SelectorMaxDepthCrawlsNestedPages(t *testing.T) {
 		switch r.URL.Path {
 		case "/":
 			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprintf(w, `<a href="%s/page-2">Next</a>`, server.URL)
+			fmt.Fprintf(w, `<a href="%s/page-2">Next</a><a href="/top.pdf">Top-level file</a>`, server.URL)
 		case "/page-2":
 			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprintf(w, `<a href="%s/file.pdf">File</a>`, server.URL)
-		case "/file.pdf":
+			fmt.Fprintf(w, `<a href="%s/file.pdf">File</a><a href="/">Back to start</a>`, server.URL)
+		case "/file.pdf", "/top.pdf":
 			w.Header().Set("Content-Type", "application/pdf")
-			fmt.Fprint(w, "pdf")
+			fmt.Fprint(w, "pdf"+r.URL.Path)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
 
+	dir := t.TempDir()
 	task := &config.DownloadTask{
 		URL:      server.URL + "/",
 		Selector: "a",
 		MaxDepth: 2,
-		Save:     config.SaveConfig{BaseDownloadDir: t.TempDir(), FilenameTemplate: "{{.URL}}"},
+		Save:     config.SaveConfig{BaseDownloadDir: dir},
 		Security: config.SecurityConfig{AllowInsecureHTTP: true},
 	}
 
@@ -366,24 +340,21 @@ func TestRunTask_SelectorMaxDepthCrawlsNestedPages(t *testing.T) {
 	if len(res.Errors) > 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	if len(res.Saved) != 2 {
-		t.Fatalf("expected links from both depths to be saved, got %d", len(res.Saved))
+	// page-2 is only crawled for links; the PDFs from both depths are saved.
+	got := savedNames(res)
+	want := []string{"file.pdf", "top.pdf"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("expected saved files %v, got %v", want, got)
 	}
-	foundNestedFile := false
-	for _, saved := range res.Saved {
-		if strings.Contains(saved.SavedFileName, "file.pdf") {
-			foundNestedFile = true
-		}
-	}
-	if !foundNestedFile {
-		t.Fatalf("expected nested file to be included in saved results, got %#v", res.Saved)
+	if string(mustRead(t, filepath.Join(dir, "top.pdf"))) != "pdf/top.pdf" {
+		t.Fatal("unexpected content for top.pdf")
 	}
 }
 
 func TestRunTask_AllowedFileTypesBlockURLBeforeFetch(t *testing.T) {
-	requests := 0
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		fmt.Fprint(w, "bin")
 	}))
@@ -402,15 +373,45 @@ func TestRunTask_AllowedFileTypesBlockURLBeforeFetch(t *testing.T) {
 	if !strings.Contains(res.Errors[0].Error(), "URL extension blocked") {
 		t.Fatalf("expected extension block error, got %v", res.Errors[0])
 	}
-	if requests != 0 {
-		t.Fatalf("expected blocked URL extension to avoid fetch, got %d requests", requests)
+	if requests.Load() != 0 {
+		t.Fatalf("expected blocked URL extension to avoid fetch, got %d requests", requests.Load())
 	}
 }
 
 func TestRunTask_AllowedFileTypesBlockResponseContentType(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html>login required</html>")
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:      server.URL + "/file.pdf",
+		Save:     config.SaveConfig{BaseDownloadDir: dir},
+		Security: config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
+		Retry:    config.Retry{Enabled: true, Config: config.RetryConfig{OnRuntimeError: true, Retries: 2}},
+	}
+
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
+	if len(res.Errors) == 0 {
+		t.Fatal("expected response content-type to be blocked")
+	}
+	if !strings.Contains(res.Errors[0].Error(), "response content-type blocked") {
+		t.Fatalf("expected content-type block error, got %v", res.Errors[0])
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("expected a blocked content type not to be retried, got %d requests", requests.Load())
+	}
+	assertDirEmpty(t, dir)
+}
+
+func TestRunTask_AllowedFileTypesAcceptGenericBinaryContentType(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
-		fmt.Fprint(w, "not a pdf")
+		fmt.Fprint(w, "%PDF-1.7")
 	}))
 	defer server.Close()
 
@@ -421,11 +422,8 @@ func TestRunTask_AllowedFileTypesBlockResponseContentType(t *testing.T) {
 	}
 
 	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
-	if len(res.Errors) == 0 {
-		t.Fatal("expected response content-type to be blocked")
-	}
-	if !strings.Contains(res.Errors[0].Error(), "response content-type blocked") {
-		t.Fatalf("expected content-type block error, got %v", res.Errors[0])
+	if len(res.Errors) > 0 {
+		t.Fatalf("expected octet-stream response to be accepted for .pdf URL, got %v", res.Errors)
 	}
 }
 
@@ -507,9 +505,9 @@ func TestRunTask_ReportsProgress(t *testing.T) {
 }
 
 func TestRunTask_DedupesGeneratedCandidateURLs(t *testing.T) {
-	requests := 0
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"ok":true}`)
 	}))
@@ -533,8 +531,8 @@ func TestRunTask_DedupesGeneratedCandidateURLs(t *testing.T) {
 	if len(res.Errors) > 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	if requests != 1 {
-		t.Fatalf("expected one request after dedupe, got %d", requests)
+	if requests.Load() != 1 {
+		t.Fatalf("expected one request after dedupe, got %d", requests.Load())
 	}
 	if len(res.Saved) != 1 {
 		t.Fatalf("expected one saved file, got %d", len(res.Saved))
@@ -542,9 +540,9 @@ func TestRunTask_DedupesGeneratedCandidateURLs(t *testing.T) {
 }
 
 func TestRunTask_BlocksDisallowedSelectorSeedURL(t *testing.T) {
-	requests := 0
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, `<a href="/file.pdf">file</a>`)
 	}))
@@ -561,14 +559,14 @@ func TestRunTask_BlocksDisallowedSelectorSeedURL(t *testing.T) {
 	}
 
 	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
-	if len(res.Errors) > 0 {
-		t.Fatalf("unexpected errors: %v", res.Errors)
+	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Error(), "blocked by security policy") {
+		t.Fatalf("expected a security policy error for the configured URL, got %v", res.Errors)
 	}
-	if len(res.Warnings) == 0 {
-		t.Fatal("expected warning when selector seed URL is blocked")
+	if len(res.Warnings) != 0 {
+		t.Fatalf("expected no extra warnings, got %v", res.Warnings)
 	}
-	if requests != 0 {
-		t.Fatalf("expected blocked selector seed to avoid request, got %d requests", requests)
+	if requests.Load() != 0 {
+		t.Fatalf("expected blocked selector seed to avoid request, got %d requests", requests.Load())
 	}
 }
 
@@ -596,10 +594,10 @@ func TestRunTask_BlocksDisallowedDomain(t *testing.T) {
 }
 
 func TestRunTask_AppliesAuthHeader(t *testing.T) {
-	tokenSeen := false
+	var tokenSeen atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "Bearer secret" {
-			tokenSeen = true
+			tokenSeen.Store(true)
 		}
 		w.Header().Set("Content-Type", "application/pdf")
 		fmt.Fprint(w, "pdf")
@@ -618,16 +616,15 @@ func TestRunTask_AppliesAuthHeader(t *testing.T) {
 	if len(res.Errors) > 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	if !tokenSeen {
+	if !tokenSeen.Load() {
 		t.Fatal("expected bearer token to be sent")
 	}
 }
 
 func TestRunTask_RetryOnServerError(t *testing.T) {
-	attempt := 0
+	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempt++
-		if attempt == 1 {
+		if attempts.Add(1) == 1 {
 			http.Error(w, "temporary", http.StatusInternalServerError)
 			return
 		}
@@ -641,19 +638,18 @@ func TestRunTask_RetryOnServerError(t *testing.T) {
 		URL:      server.URL + "/file.pdf",
 		Save:     config.SaveConfig{BaseDownloadDir: dir},
 		Security: config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
-		Retry:    config.Retry{Enabled: true, Config: config.RetryConfig{OnRuntimeError: true, Retries: 2, Delay: 1}},
+		Retry:    config.Retry{Enabled: true, Config: config.RetryConfig{OnRuntimeError: true, Retries: 2}},
 	}
 
 	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1})
 	if len(res.Errors) > 0 {
 		t.Fatalf("unexpected errors: %v", res.Errors)
 	}
-	if attempt < 2 {
-		t.Fatalf("expected retry attempts, got %d", attempt)
+	if attempts.Load() != 2 {
+		t.Fatalf("expected exactly one retry, got %d attempts", attempts.Load())
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*"))
-	if len(files) == 0 {
-		t.Fatal("expected downloaded file")
+	if got := string(mustRead(t, filepath.Join(dir, "file.pdf"))); got != "ok" {
+		t.Fatalf("expected the successful retry's content, got %q", got)
 	}
 }
 
@@ -681,9 +677,9 @@ func TestRunTask_StopAllTasksOnRuntimeError(t *testing.T) {
 }
 
 func TestRunTask_StopAllTasksOnHTTPCodeAfterRetries(t *testing.T) {
-	attempt := 0
+	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempt++
+		attempts.Add(1)
 		http.Error(w, "temporary", http.StatusInternalServerError)
 	}))
 	defer server.Close()
@@ -693,7 +689,7 @@ func TestRunTask_StopAllTasksOnHTTPCodeAfterRetries(t *testing.T) {
 		URL:          server.URL + "/file.pdf",
 		Save:         config.SaveConfig{BaseDownloadDir: dir},
 		Security:     config.SecurityConfig{AllowedFileTypes: []string{"pdf"}, AllowInsecureHTTP: true},
-		Retry:        config.Retry{Enabled: true, Config: config.RetryConfig{OnHTTPCode: []int{500}, Retries: 2, Delay: 1}},
+		Retry:        config.Retry{Enabled: true, Config: config.RetryConfig{OnHTTPCode: []int{500}, Retries: 2}},
 		StopAllTasks: config.StopAllTasks{OnHTTPCode: []int{500}},
 	}
 
@@ -704,8 +700,8 @@ func TestRunTask_StopAllTasksOnHTTPCodeAfterRetries(t *testing.T) {
 	if !res.AbortAll {
 		t.Fatal("expected AbortAll to be true")
 	}
-	if attempt != 3 {
-		t.Fatalf("expected 3 attempts (retries respected before stop), got %d", attempt)
+	if attempts.Load() != 3 {
+		t.Fatalf("expected 3 attempts (retries respected before stop), got %d", attempts.Load())
 	}
 }
 
@@ -737,34 +733,10 @@ func TestRunTask_TreatWarningsAsErrors_PromotesWarnings(t *testing.T) {
 	}
 }
 
-func TestRunTask_TreatWarningsAsErrors_TriggersStopAllTasksOnRuntimeError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte("<html><body><p>no links here</p></body></html>"))
-	}))
-	defer server.Close()
-
-	task := &config.DownloadTask{
-		URL:                   server.URL + "/",
-		Selector:              "a",
-		TreatWarningsAsErrors: true,
-		StopAllTasks:          config.StopAllTasks{OnRuntimeError: true},
-		Security:              config.SecurityConfig{AllowInsecureHTTP: true},
-	}
-
-	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}})
-	if len(res.Errors) == 0 {
-		t.Fatal("expected promoted warning to be treated as error")
-	}
-	if !res.AbortAll {
-		t.Fatal("expected AbortAll to be true when stop_all_tasks.on_runtime_error is enabled")
-	}
-}
-
 func TestRunTask_TreatWarningsAsErrors_RetriesThenStopsAllTasksOnRuntimeError(t *testing.T) {
-	attempt := 0
+	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempt++
+		attempts.Add(1)
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<html><body><p>no links here</p></body></html>"))
 	}))
@@ -776,7 +748,6 @@ func TestRunTask_TreatWarningsAsErrors_RetriesThenStopsAllTasksOnRuntimeError(t 
 		Retry: config.Retry{Enabled: true, Config: config.RetryConfig{
 			OnRuntimeError: true,
 			Retries:        2,
-			Delay:          1,
 		}},
 		TreatWarningsAsErrors: true,
 		StopAllTasks:          config.StopAllTasks{OnRuntimeError: true},
@@ -790,8 +761,8 @@ func TestRunTask_TreatWarningsAsErrors_RetriesThenStopsAllTasksOnRuntimeError(t 
 	if !res.AbortAll {
 		t.Fatal("expected AbortAll to be true after retries are exhausted")
 	}
-	if attempt != 3 {
-		t.Fatalf("expected 3 task attempts (initial + 2 retries), got %d", attempt)
+	if attempts.Load() != 3 {
+		t.Fatalf("expected 3 task attempts (initial + 2 retries), got %d", attempts.Load())
 	}
 }
 
@@ -1091,19 +1062,196 @@ func TestRunTask_WarningOnlyResultRunsSuccessHook(t *testing.T) {
 	}
 }
 
+func TestRunTask_HooksReceiveTaskEnvAndResultFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "hello")
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:      server.URL + "/file.txt",
+		Save:     config.SaveConfig{BaseDownloadDir: t.TempDir()},
+		Security: config.SecurityConfig{AllowInsecureHTTP: true},
+		Hooks:    config.HooksConfig{OnSuccess: &config.HookCommand{Command: "process"}},
+	}
+	runner := &recordingHookRunner{}
+	res := (&Service{HookRunner: runner}).RunTask(context.Background(), "reports", task, oneWorker())
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if len(runner.envs) != 1 {
+		t.Fatalf("expected one hook run, got %d", len(runner.envs))
+	}
+	env := runner.envs[0]
+	if env["GODOWNLOAD_TASK"] != "reports" || env["GODOWNLOAD_STATUS"] != "success" {
+		t.Fatalf("unexpected hook env: %v", env)
+	}
+
+	var result hookResultFile
+	if err := json.Unmarshal([]byte(runner.resultFiles[0]), &result); err != nil {
+		t.Fatalf("decode result file: %v (%q)", err, runner.resultFiles[0])
+	}
+	const helloSHA256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+	if len(result.Saved) != 1 || result.Saved[0].SHA256 != helloSHA256 || result.Saved[0].URL != task.URL {
+		t.Fatalf("unexpected result file: %+v", result)
+	}
+	if _, err := os.Stat(env["GODOWNLOAD_RESULT_FILE"]); !os.IsNotExist(err) {
+		t.Fatalf("expected result file to be removed after hooks, got %v", err)
+	}
+}
+
+func TestRunTask_DifferentURLsResolvingToSameFileAreReported(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, r.URL.Query().Get("item"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:        server.URL + "/report.txt?item={{.ITEM}}",
+		URLGenList: &config.URLGenList{VarName: "ITEM", Values: []string{"A", "B"}},
+		Save:       config.SaveConfig{BaseDownloadDir: dir},
+		Security:   config.SecurityConfig{AllowInsecureHTTP: true},
+	}
+	res := (&Service{}).RunTask(context.Background(), "task1", task, config.WorkerConfig{DownloadsPerTaskConcurrency: 2})
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "resolves to the same file as") {
+		t.Fatalf("expected a collision warning, got %v", res.Warnings)
+	}
+	if got := string(mustRead(t, filepath.Join(dir, "report.txt"))); got != "A" && got != "B" {
+		t.Fatalf("unexpected content %q", got)
+	}
+}
+
+func TestRunTask_PromotedWarningRetrySkippedWhenFilesWereSaved(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, "data")
+	}))
+	defer server.Close()
+
+	task := &config.DownloadTask{
+		URL:                   server.URL + "/report.txt?item={{.ITEM}}",
+		URLGenList:            &config.URLGenList{VarName: "ITEM", Values: []string{"A", "B"}},
+		TreatWarningsAsErrors: true,
+		Save:                  config.SaveConfig{BaseDownloadDir: t.TempDir()},
+		Security:              config.SecurityConfig{AllowInsecureHTTP: true},
+		Retry:                 config.Retry{Enabled: true, Config: config.RetryConfig{OnRuntimeError: true, Retries: 3}},
+	}
+	res := (&Service{}).RunTask(context.Background(), "task1", task, oneWorker())
+	if len(res.Errors) != 1 {
+		t.Fatalf("expected the promoted collision warning as the only error, got %v", res.Errors)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("expected the task not to be re-run, got %d requests", requests.Load())
+	}
+}
+
+func TestRunTask_URLGenFileCanBeAURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/list.txt" {
+			fmt.Fprint(w, "\ufeff# files to fetch\r\n/a.txt\r\n\r\n/b.txt\r\n")
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprint(w, r.URL.Path)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	task := &config.DownloadTask{
+		URL:        server.URL + "{{.PATH}}",
+		URLGenFile: &config.URLGenFile{VarName: "PATH", File: server.URL + "/list.txt"},
+		Save:       config.SaveConfig{BaseDownloadDir: dir},
+		Security:   config.SecurityConfig{AllowInsecureHTTP: true},
+	}
+	res := (&Service{}).RunTask(context.Background(), "task1", task, oneWorker())
+	if len(res.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if got := savedNames(res); strings.Join(got, ",") != "a.txt,b.txt" {
+		t.Fatalf("expected a.txt and b.txt, got %v", got)
+	}
+}
+
 type recordingHookRunner struct {
 	names       []string
 	commands    []string
 	contextErrs []error
+	envs        []map[string]string
+	resultFiles []string
 	failNames   map[string]bool
 }
 
-func (r *recordingHookRunner) Run(ctx context.Context, name string, command string, timeoutSeconds int) hooks.Result {
+func (r *recordingHookRunner) Run(ctx context.Context, name string, command string, timeoutSeconds int, env map[string]string) hooks.Result {
 	r.names = append(r.names, name)
 	r.commands = append(r.commands, command)
 	r.contextErrs = append(r.contextErrs, ctx.Err())
+	r.envs = append(r.envs, env)
+	if path := env["GODOWNLOAD_RESULT_FILE"]; path != "" {
+		b, _ := os.ReadFile(path)
+		r.resultFiles = append(r.resultFiles, string(b))
+	}
 	if r.failNames[name] {
 		return hooks.Result{Name: name, Command: command, ExitCode: 2, Output: "hook output", Err: errors.New("hook " + name + " failed")}
 	}
 	return hooks.Result{Name: name, Command: command}
+}
+
+// savedNames returns the sorted relative names of files saved (not skipped).
+func savedNames(res TaskResult) []string {
+	var names []string
+	for _, s := range res.Saved {
+		if !s.Skipped {
+			names = append(names, filepath.ToSlash(s.SavedFileName))
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func assertDirEmpty(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("expected %s to be empty, found %v", dir, names)
+	}
+}
+
+func oneWorker() config.WorkerConfig {
+	return config.WorkerConfig{DownloadsPerTaskConcurrency: 1, DefaultAttrMapping: map[string]string{"a": "href"}}
+}
+
+// otherHostURL rewrites a 127.0.0.1 test server URL to use "localhost", so
+// tests can have two servers on different hostnames.
+func otherHostURL(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Host = "localhost:" + u.Port()
+	return u.String()
 }

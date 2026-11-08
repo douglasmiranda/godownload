@@ -92,10 +92,9 @@ downloads:
       file: ./assets/does-not-exist.txt
 
   generated_query_filename_collision:
-    # Both URLs have the same ORIGINAL_FILENAME. Running serially guarantees
-    # the second one is skipped and its warning is promoted to an error.
+    # Both URLs have the same ORIGINAL_FILENAME, so the second one is skipped
+    # and its warning is promoted to an error.
     url: $HTTPBIN_URL/anything/generated-query-collision?item={{.ITEM}}
-    downloads_per_task_concurrency: 1
     url_gen_list:
       var_name: ITEM
       values: ["A", "B"]
@@ -135,12 +134,6 @@ downloads:
     url: $HTTPBIN_URL/robots.txt
     security:
       max_download_size: 29b
-
-  max_in_memory_size_exceeded:
-    # /robots.txt is 30 bytes.
-    url: $HTTPBIN_URL/robots.txt
-    security:
-      max_in_memory_size: 29b
 
   self_signed_certificate_rejected:
     url: https://127.0.0.1:18443/self-signed-test.txt

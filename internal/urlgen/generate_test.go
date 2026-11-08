@@ -92,7 +92,7 @@ func TestGenerateFile(t *testing.T) {
 		URLGenFile: &config.URLGenFile{VarName: "URL", File: "ignored"},
 	}
 	loader := func(path string) ([]string, error) {
-		return []string{"a", " ", "b"}, nil
+		return []string{"# list of files", "a", " ", "  # indented comment", "b"}, nil
 	}
 	got, err := Generate(task, loader)
 	if err != nil {
@@ -146,6 +146,20 @@ func TestLocalFileLoader(t *testing.T) {
 	want := []string{"https://example.com/a", "", "https://example.com/b"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected lines: %#v", got)
+	}
+}
+
+func TestReadLines_BOMCRLFAndLongLines(t *testing.T) {
+	long := "https://example.com/" + strings.Repeat("x", 100_000)
+	input := "\ufeffhttps://example.com/a\r\n" + long + "\r\nhttps://example.com/last"
+
+	got, err := ReadLines(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"https://example.com/a", long, "https://example.com/last"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected lines: %q", got)
 	}
 }
 

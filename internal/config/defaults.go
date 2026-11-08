@@ -23,7 +23,8 @@ func applyDefaults(cfg *Config) {
 	if !cfg.Config.hasField("downloads_per_task_concurrency") && cfg.Config.DownloadsPerTaskConcurrency <= 0 {
 		cfg.Config.DownloadsPerTaskConcurrency = DefaultDownloadsPerTaskConcurrency
 	}
-	if strings.TrimSpace(cfg.Config.LogLevel) == "" {
+	cfg.Config.LogLevel = strings.ToUpper(strings.TrimSpace(cfg.Config.LogLevel))
+	if cfg.Config.LogLevel == "" {
 		cfg.Config.LogLevel = DefaultLogLevel
 	}
 	if cfg.Config.DefaultAttrMapping == nil {
@@ -41,9 +42,6 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Config.Env == nil {
 		cfg.Config.Env = map[string]string{}
-	}
-	if !cfg.Config.hasField("security.max_in_memory_size") && cfg.Config.Security.MaxInMemorySize == 0 {
-		cfg.Config.Security.MaxInMemorySize = DefaultMaxInMemorySize
 	}
 
 	for _, task := range cfg.Downloads {
@@ -88,9 +86,6 @@ func applyDefaults(cfg *Config) {
 		}
 		if !task.hasField("treat_warnings_as_errors") {
 			task.TreatWarningsAsErrors = cfg.Config.TreatWarningsAsErrors
-		}
-		if strings.TrimSpace(task.BaseDownloadDir) == "" {
-			task.BaseDownloadDir = cfg.Config.BaseDownloadDir
 		}
 		if !task.hasField("stop_all_tasks.on_runtime_error") {
 			task.StopAllTasks.OnRuntimeError = cfg.Config.StopAllTasks.OnRuntimeError
@@ -142,10 +137,6 @@ func applyDefaults(cfg *Config) {
 			task.Save.SaveMetadata = cfg.Config.Save.SaveMetadata
 		}
 
-		if strings.TrimSpace(task.BaseDownloadDir) != "" && strings.TrimSpace(task.Save.BaseDownloadDir) == "" {
-			task.Save.BaseDownloadDir = task.BaseDownloadDir
-		}
-
 		if !task.hasField("max_depth") && task.MaxDepth <= 0 {
 			if cfg.Config.MaxDepth > 0 {
 				task.MaxDepth = cfg.Config.MaxDepth
@@ -154,17 +145,9 @@ func applyDefaults(cfg *Config) {
 			}
 		}
 
-		if task.Retry.Enabled {
-			if task.Retry.Config.Retries == 0 {
-				task.Retry.Config.Retries = 3
-			}
-			if task.Retry.Config.Delay == 0 {
-				task.Retry.Config.Delay = 1
-			}
-			if task.Retry.Config.ExponentialBackoff == nil {
-				backoff := true
-				task.Retry.Config.ExponentialBackoff = &backoff
-			}
+		if task.Retry.Enabled && task.Retry.Config.ExponentialBackoff == nil {
+			backoff := true
+			task.Retry.Config.ExponentialBackoff = &backoff
 		}
 
 		if task.Auth != nil && strings.TrimSpace(task.Auth.KeyIn) == "" {
@@ -274,9 +257,6 @@ func mergeSecurityDefaults(task *DownloadTask, defaults SecurityConfig) Security
 	}
 	if !task.hasField("security.max_download_size") {
 		out.MaxDownloadSize = defaults.MaxDownloadSize
-	}
-	if !task.hasField("security.max_in_memory_size") {
-		out.MaxInMemorySize = defaults.MaxInMemorySize
 	}
 	return out
 }

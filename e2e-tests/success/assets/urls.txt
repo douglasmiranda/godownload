@@ -1,2 +1,4 @@
+# blank lines and lines starting with # are skipped
 /anything/url_gen_file_example_file_1
+
 /anything/url_gen_file_example_file_2

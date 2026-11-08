@@ -35,11 +35,11 @@ type Options struct {
 
 // Printer renders CLI output for text mode.
 type Printer struct {
-	stdout io.Writer
-	stderr io.Writer
-	color  bool
+	stdout      io.Writer
+	stderr      io.Writer
+	color       bool
 	interactive bool
-	progress *ProgressTracker
+	progress    *ProgressTracker
 }
 
 // IsTerminal reports whether w is a terminal device.
@@ -126,6 +126,23 @@ func (p *Printer) PrintLegacyStop(taskName string) {
 func (p *Printer) PrintLegacySummary(taskCount, saved, skipped, warnings, errors int) {
 	fmt.Fprintf(p.stdout, "summary: tasks=%d saved=%d skipped=%d warnings=%d errors=%d\n",
 		taskCount, saved, skipped, warnings, errors)
+}
+
+// PrintDryRunTaskLine writes the per-task dry-run summary line to stdout.
+func (p *Printer) PrintDryRunTaskLine(name string, planned, skipped, warnings, errors int) {
+	fmt.Fprintf(p.stdout, "task %s: would_download=%d skipped=%d warnings=%d errors=%d\n",
+		name, planned, skipped, warnings, errors)
+}
+
+// PrintPlannedDownload writes one file a dry run would download to stdout.
+func (p *Printer) PrintPlannedDownload(url, path string) {
+	fmt.Fprintf(p.stdout, "  %s -> %s\n", url, path)
+}
+
+// PrintDryRunSummary writes the final dry-run summary line to stdout.
+func (p *Printer) PrintDryRunSummary(taskCount, planned, skipped, warnings, errors int) {
+	fmt.Fprintf(p.stdout, "dry-run summary: tasks=%d would_download=%d skipped=%d warnings=%d errors=%d\n",
+		taskCount, planned, skipped, warnings, errors)
 }
 
 // Wait flushes progress bars before other stdout output.

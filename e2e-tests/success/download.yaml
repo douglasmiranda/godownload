@@ -23,7 +23,10 @@ downloads:
     url: $HTTPBIN_URL/robots.txt
     hooks:
       on_success:
-        command: test -f ./d-files/robots.txt
+        # robots.txt is "User-agent: *\nDisallow: /deny\n" (30 bytes)
+        command: >-
+          grep -qx 'Disallow: /deny' ./d-files/robots.txt &&
+          test "$(wc -c < ./d-files/robots.txt)" -eq 30
 
   # save with a custom filename so it doesn't generate warning:
   download_and_rename:
@@ -144,6 +147,21 @@ downloads:
       on_success:
         command: test -f ./d-files/selector_download_limit_*_png && test ! -f ./d-files/selector_download_limit_*_404
 
+  # max_depth: 2 follows links to HTML pages and downloads what those pages link to.
+  # The intermediate page is only crawled, not saved.
+  # seed page:      <a href="/links/2/0">next page</a>
+  # /links/2/0:     an HTML page with <a href="/links/2/1">1</a>
+  # downloaded:     /links/2/1, saved as "1"; /links/2/0 would be saved as "0"
+  selector_with_max_depth:
+    url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2xpbmtzLzIvMCI+bmV4dCBwYWdlPC9hPg==
+    selector: "a"
+    max_depth: 2
+    save:
+      base_download_dir: ./d-files/crawl
+    hooks:
+      on_success:
+        command: test "$(ls ./d-files/crawl)" = "1"
+
   ################
   # url generation
   ################
@@ -248,14 +266,30 @@ downloads:
         command: 
           test -f ./d-files/url_gen_file_example_file_1 &&
           test -f ./d-files/url_gen_file_example_file_2
-    
+
+  # url_gen_file can also be an http(s) URL; blank lines and # comments are skipped
+  # the file served by httpbin is:
+  #   # remote list of paths
+  #   /anything/remote_list_1
+  #
+  #   /anything/remote_list_2
+  dynamic_urls_list_from_remote_file:
+    url: "$HTTPBIN_URL{{.URL}}"
+    url_gen_file:
+      var_name: URL
+      file: $HTTPBIN_URL/base64/IyByZW1vdGUgbGlzdCBvZiBwYXRocwovYW55dGhpbmcvcmVtb3RlX2xpc3RfMQoKL2FueXRoaW5nL3JlbW90ZV9saXN0XzIK
+    hooks:
+      on_success:
+        command:
+          test -f ./d-files/remote_list_1 &&
+          test -f ./d-files/remote_list_2
+
 
   # example with duplicated URLs in the file
-  # that + download_limit should ensure we do not hit the duplicate URL
-  # thus avoiding warnings or errors related to duplicate URLs
+  # duplicated URLs are downloaded once; a second download would be skipped
+  # because the file exists, and that warning would fail this suite
   dynamic_urls_using_file_with_duplicated_urls:
     url: "$HTTPBIN_URL{{.URL}}"
-    download_limit: 1
     url_gen_file:
       var_name: URL
       file: ./assets/duplicated_urls.txt
@@ -268,21 +302,33 @@ downloads:
   # File Save and Naming
   ######################
 
-  # Using force_download on both because concurrency
-  force_download:
-    force_download: true
-    url: $HTTPBIN_URL/anything/force_download_test
-    hooks:
-      on_success:
-        command: test -f ./d-files/force_download_test
+  # The e2e-tests task (Taskfile) creates d-files/force_append/force_download_test
+  # and d-files/force_override/force_download_test containing "old" before running.
 
-  # the one that downloads last will add _1 to the filename
+  # force_download keeps the existing file and saves the new one with a _1 suffix
   force_download_auto_append_counter:
     force_download: true
     url: $HTTPBIN_URL/anything/force_download_test
+    save:
+      base_download_dir: ./d-files/force_append
     hooks:
       on_success:
-        command: test -f ./d-files/force_download_test_1
+        command:
+          grep -qx old ./d-files/force_append/force_download_test &&
+          grep -q /anything/force_download_test ./d-files/force_append/force_download_test_1
+
+  # override_if_exists replaces the existing file when force_download is true
+  force_download_with_override_if_exists:
+    force_download: true
+    url: $HTTPBIN_URL/anything/force_download_test
+    save:
+      base_download_dir: ./d-files/force_override
+      override_if_exists: true
+    hooks:
+      on_success:
+        command:
+          grep -q /anything/force_download_test ./d-files/force_override/force_download_test &&
+          test ! -e ./d-files/force_override/force_download_test_1
 
   save_with_extension_override:
     url: $HTTPBIN_URL/image/png
@@ -293,6 +339,7 @@ downloads:
       on_success:
         command: test -f ./d-files/png_file_without_extension_*.png
 
+  # the metadata sidecar records the size and sha256 of the saved file
   save_with_metadata_sidecar:
     url: $HTTPBIN_URL/image/png
     save:
@@ -301,26 +348,23 @@ downloads:
     hooks:
       on_success:
         command:
-          test -f ./d-files/image_with_metadata.png &&
-          test -f ./d-files/image_with_metadata_metadata.json
+          test "$(jq -r .sha256 ./d-files/image_with_metadata_metadata.json)" = "$(sha256sum ./d-files/image_with_metadata.png | cut -d' ' -f1)" &&
+          test "$(jq -r .size ./d-files/image_with_metadata_metadata.json)" -eq "$(wc -c < ./d-files/image_with_metadata.png)"
 
-  # override_if_exists controls replace behavior when force_download is true.
-  force_download_with_override_if_exists:
-    url: "$HTTPBIN_URL{{.URL}}"
-    url_gen_file:
-      var_name: URL
-      file: ./assets/duplicated_urls.txt
-    force_download: true
+  # responses sent with Content-Encoding: gzip are saved exactly as received
+  gzip_response_saved_verbatim:
+    url: $HTTPBIN_URL/gzip
     save:
-      override_if_exists: true
+      filename: "gzip_response.json.gz"
     hooks:
       on_success:
-        command: test -f ./d-files/dup1
+        command: gzip -dc ./d-files/gzip_response.json.gz | jq -e '.gzipped == true'
 
   ######################
   # Reliability and Limits
   ######################
 
+  # timeout is how long to wait without receiving data
   timeout_success:
     url: $HTTPBIN_URL/delay/2
     timeout: 3
@@ -329,6 +373,17 @@ downloads:
     hooks:
       on_success:
         command: test -f ./d-files/timeout_success.json
+
+  # the download takes 3s in total, but a byte arrives every second,
+  # so a 2s timeout is never reached
+  timeout_counts_idle_time_not_total_time:
+    url: $HTTPBIN_URL/drip?duration=3&numbytes=3&delay=0
+    timeout: 2
+    save:
+      filename: "timeout_drip.txt"
+    hooks:
+      on_success:
+        command: test "$(wc -c < ./d-files/timeout_drip.txt)" -eq 3
 
   # this one is hard to test here
   # so the goal is just to make sure that retry: true doesn't cause any issue
@@ -366,7 +421,8 @@ downloads:
     hooks:
       on_success:
         # env_expansion_http_localhost_18080_anything_token=from-task-env&source=env.json
-        command: test -f ./d-files/env_expansion_*_anything_token=from-task-env&source=env.json
+        # "&" is quoted so the shell does not treat it as a background operator
+        command: test -f ./d-files/env_expansion_*_anything_token=from-task-env'&'source=env.json
 
   ################
   # Security
@@ -400,8 +456,8 @@ downloads:
       follow_redirects: true
     hooks:
       on_success:
-        # the filename does not become the redirected URL
-        command: test -f ./d-files/redirect-to
+        # the filename does not become the redirected URL, but the content does
+        command: jq -e '.url | endswith("/anything/properly-redirected")' ./d-files/redirect-to
 
   max_download_size_enabled:
     url: $HTTPBIN_URL/robots.txt
@@ -422,7 +478,7 @@ downloads:
       on_success:
         command: test -f ./d-files/test-allowed-domains.json
 
-  # Requires the local self-signed server started by `make e2e-tests`
+  # Requires the local self-signed server started by `task e2e-tests`
   # (e2e-tests/support/selfsignedserver on port 18443).
   allow_self_signed_cert_enabled:
     url: https://127.0.0.1:18443/self-signed-test.txt
@@ -445,6 +501,9 @@ downloads:
       password: "testpassword"
     save:
       filename: "basic_auth_success.json"
+    hooks:
+      on_success:
+        command: jq -e '.authenticated == true' ./d-files/basic_auth_success.json
 
   bearer_token_auth:
     url: $HTTPBIN_URL/bearer
@@ -512,6 +571,23 @@ downloads:
     hooks:
       on_success:
         command: jq -e '.headers["Cookie"][0] == "X-Api-Key=test-api-key-123"' ./d-files/api_key_cookie_success.json
+
+  # credentials are only sent to the configured hosts: localhost here.
+  # 127.0.0.1 is a different host, so the header is dropped on the redirect.
+  credentials_not_sent_to_other_host_after_redirect:
+    url: $HTTPBIN_URL/redirect-to?url=http://127.0.0.1:18080/anything/credentials-redirect
+    auth:
+      type: api_key
+      key_name: X-Api-Key
+      key_value: test-api-key-123
+      key_in: header
+    save:
+      filename: credentials_redirect.json
+    hooks:
+      on_success:
+        command:
+          jq -e '.url == "http://127.0.0.1:18080/anything/credentials-redirect"' ./d-files/credentials_redirect.json &&
+          jq -e '.headers["X-Api-Key"] == null' ./d-files/credentials_redirect.json
 
   #######
   # Hooks

@@ -1,9 +1,14 @@
 package storage
 
 import (
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path"
@@ -12,6 +17,7 @@ import (
 	"strings"
 	"text/template"
 	"time"
+	"unicode/utf8"
 
 	"github.com/douglasmiranda/godownload/internal/config"
 	"github.com/google/uuid"
@@ -23,6 +29,9 @@ type SaveResult struct {
 	Skipped       bool
 	SkipReason    string
 	SavedFileName string
+	DownloadURL   string
+	Size          int64
+	SHA256        string
 }
 
 // Target is the resolved destination for a download. Its values are kept
@@ -35,6 +44,12 @@ type Target struct {
 	originalName string
 }
 
+// Path returns the absolute destination path.
+func (t Target) Path() string { return t.finalPath }
+
+// Name returns the destination path relative to the base download directory.
+func (t Target) Name() string { return t.finalName }
+
 type Metadata struct {
 	MainURL          string `json:"main_url"`
 	DownloadURL      string `json:"download_url"`
@@ -42,10 +57,12 @@ type Metadata struct {
 	SavedFileName    string `json:"saved_filename"`
 	Timestamp        string `json:"timestamp"`
 	Size             int64  `json:"size"`
+	SHA256           string `json:"sha256"`
 	MIMEType         string `json:"mime_type"`
 	DownloadTaskName string `json:"download_task_name"`
 }
 
+// Save resolves the target for downloadURL and writes content to it.
 func Save(taskName string, task *config.DownloadTask, downloadURL string, content []byte, contentType string) (SaveResult, error) {
 	if task == nil {
 		return SaveResult{}, fmt.Errorf("task is nil")
@@ -54,11 +71,14 @@ func Save(taskName string, task *config.DownloadTask, downloadURL string, conten
 	if err != nil {
 		return SaveResult{}, err
 	}
-	return SaveToTarget(taskName, task, downloadURL, target, content, contentType)
+	return SaveToTarget(taskName, task, downloadURL, target, bytes.NewReader(content), contentType)
 }
 
-// SaveToTarget saves content to a previously resolved target.
-func SaveToTarget(taskName string, task *config.DownloadTask, downloadURL string, target Target, content []byte, contentType string) (SaveResult, error) {
+// SaveToTarget streams body to a previously resolved target. The data is
+// written to a temporary file next to the target and only moved to the final
+// name after body has been read completely, so a failed or interrupted
+// download never leaves a partial file under the final name.
+func SaveToTarget(taskName string, task *config.DownloadTask, downloadURL string, target Target, body io.Reader, contentType string) (SaveResult, error) {
 	if task == nil {
 		return SaveResult{}, fmt.Errorf("task is nil")
 	}
@@ -76,42 +96,152 @@ func SaveToTarget(taskName string, task *config.DownloadTask, downloadURL string
 		return SaveResult{}, fmt.Errorf("create target directory: %w", err)
 	}
 
-	f, finalPath, finalName, skipped, err := openTarget(root, target.baseDir, target.finalName, task)
+	tmpName, size, sum, err := writeTemp(root, target.finalName, body)
 	if err != nil {
-		return SaveResult{}, fmt.Errorf("create downloaded file: %w", err)
+		return SaveResult{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = root.Remove(tmpName)
+		}
+	}()
+
+	finalName, skipped, err := commitTemp(root, tmpName, target.finalName, task)
+	if err != nil {
+		return SaveResult{}, fmt.Errorf("save downloaded file: %w", err)
 	}
 	if skipped {
-		return SaveResult{Skipped: true, SkipReason: "file already exists", FilePath: finalPath, SavedFileName: finalName}, nil
+		return SaveResult{Skipped: true, SkipReason: "file already exists", FilePath: target.finalPath, SavedFileName: target.finalName, DownloadURL: downloadURL}, nil
 	}
-	if _, err := f.Write(content); err != nil {
-		f.Close()
-		return SaveResult{}, fmt.Errorf("write downloaded file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return SaveResult{}, fmt.Errorf("write downloaded file: %w", err)
+	committed = true
+	finalPath, err := containedPath(target.baseDir, finalName)
+	if err != nil {
+		return SaveResult{}, err
 	}
 
-	result := SaveResult{FilePath: finalPath, SavedFileName: finalName}
+	result := SaveResult{FilePath: finalPath, SavedFileName: finalName, DownloadURL: downloadURL, Size: size, SHA256: sum}
 	if task.Save.SaveMetadata {
 		metaName := metadataPathFor(finalName)
-		metaPath := metadataPathFor(finalPath)
 		meta := Metadata{
 			MainURL:          task.URL,
 			DownloadURL:      downloadURL,
 			OriginalFileName: target.originalName,
 			SavedFileName:    finalName,
 			Timestamp:        time.Now().Format(time.RFC3339),
-			Size:             int64(len(content)),
+			Size:             size,
+			SHA256:           sum,
 			MIMEType:         contentType,
 			DownloadTaskName: taskName,
 		}
 		if err := writeMetadata(root, metaName, meta); err != nil {
 			return SaveResult{}, err
 		}
-		result.MetadataPath = metaPath
+		result.MetadataPath = metadataPathFor(finalPath)
 	}
 
 	return result, nil
+}
+
+// writeTemp copies body into a new hidden file in the target's directory and
+// returns its name, size and SHA-256. The file is removed on error.
+func writeTemp(root *os.Root, finalName string, body io.Reader) (string, int64, string, error) {
+	var f *os.File
+	var tmpName string
+	for range 10 {
+		tmpName = tempNameFor(finalName)
+		var err error
+		f, err = root.OpenFile(tmpName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", 0, "", fmt.Errorf("create temporary file: %w", err)
+		}
+		f = nil
+	}
+	if f == nil {
+		return "", 0, "", fmt.Errorf("create temporary file: too many name collisions")
+	}
+
+	h := sha256.New()
+	size, err := io.Copy(io.MultiWriter(f, h), body)
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = root.Remove(tmpName)
+		return "", 0, "", fmt.Errorf("write downloaded file: %w", err)
+	}
+	return tmpName, size, hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func tempNameFor(finalName string) string {
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	dir, base := filepath.Split(finalName)
+	return filepath.Join(dir, "."+base+"."+hex.EncodeToString(b[:])+".part")
+}
+
+// commitTemp moves tmpName to name following the task's existing-file rules.
+// It returns the name actually used, or skipped=true when name already exists
+// and the task does not force downloads.
+func commitTemp(root *os.Root, tmpName string, name string, task *config.DownloadTask) (string, bool, error) {
+	if task.ForceDownload && task.Save.OverrideIfExists {
+		return name, false, root.Rename(tmpName, name)
+	}
+
+	err := renameNoReplace(root, tmpName, name)
+	if err == nil {
+		return name, false, nil
+	}
+	if !errors.Is(err, os.ErrExist) {
+		return "", false, err
+	}
+	if !task.ForceDownload {
+		return "", true, nil
+	}
+
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s_%d%s", base, i, ext)
+		err := renameNoReplace(root, tmpName, candidate)
+		if err == nil {
+			return candidate, false, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", false, err
+		}
+	}
+}
+
+// renameNoReplace moves oldName to newName, failing with os.ErrExist when
+// newName already exists.
+func renameNoReplace(root *os.Root, oldName string, newName string) error {
+	err := root.Link(oldName, newName)
+	if err == nil {
+		_ = root.Remove(oldName)
+		return nil
+	}
+	if errors.Is(err, os.ErrExist) {
+		return os.ErrExist
+	}
+	// Some filesystems do not support hard links. Reserve the name
+	// exclusively instead, then replace the empty placeholder.
+	f, err := root.OpenFile(newName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_ = f.Close()
+	if err := root.Rename(oldName, newName); err != nil {
+		_ = root.Remove(newName)
+		return err
+	}
+	return nil
 }
 
 // SkipIfExists reports whether target already exists and the task would skip
@@ -174,55 +304,6 @@ func ResolveTarget(task *config.DownloadTask, downloadURL string) (Target, error
 		finalPath:    finalPath,
 		originalName: originalName,
 	}, nil
-}
-
-// openTarget atomically reserves the destination path so that concurrent
-// downloads within a task cannot race on os.Stat/os.WriteFile (TOCTOU) and
-// silently overwrite each other. It returns an open file handle for the
-// caller to write to, or skipped=true when the file already exists and the
-// task is not configured to force/override.
-func openTarget(root *os.Root, baseDir string, name string, task *config.DownloadTask) (f *os.File, finalPath string, finalName string, skipped bool, err error) {
-	if root == nil {
-		return nil, "", name, false, fmt.Errorf("base directory root is nil")
-	}
-	finalPath, err = containedPath(baseDir, name)
-	if err != nil {
-		return nil, "", name, false, err
-	}
-
-	if task.ForceDownload && task.Save.OverrideIfExists {
-		f, err = root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		return f, finalPath, name, false, err
-	}
-
-	f, err = root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err == nil {
-		return f, finalPath, name, false, nil
-	}
-	if !errors.Is(err, os.ErrExist) {
-		return nil, finalPath, name, false, err
-	}
-
-	if !task.ForceDownload {
-		return nil, finalPath, name, true, nil
-	}
-
-	ext := filepath.Ext(name)
-	base := strings.TrimSuffix(name, ext)
-	for i := 1; ; i++ {
-		candidateName := fmt.Sprintf("%s_%d%s", base, i, ext)
-		candidatePath, err := containedPath(baseDir, candidateName)
-		if err != nil {
-			return nil, "", candidateName, false, err
-		}
-		f, err = root.OpenFile(candidateName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err == nil {
-			return f, candidatePath, candidateName, false, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, candidatePath, candidateName, false, err
-		}
-	}
 }
 
 func containedPath(baseDir string, name string) (string, error) {
@@ -320,7 +401,53 @@ func sanitizeFilenameValue(v string) string {
 	for strings.Contains(v, "__") {
 		v = strings.ReplaceAll(v, "__", "_")
 	}
-	return v
+	if v == "" {
+		return ""
+	}
+	if isWindowsReservedName(v) {
+		v = "_" + v
+	}
+	return truncateComponent(v)
+}
+
+// maxComponentBytes leaves room under the common 255-byte filename limit for
+// the "_metadata.json" suffix and the temporary ".<name>.<random>.part" name.
+const maxComponentBytes = 200
+
+// truncateComponent shortens long names, keeping the extension and adding a
+// short hash of the full name so different long names stay distinct.
+func truncateComponent(v string) string {
+	if len(v) <= maxComponentBytes {
+		return v
+	}
+	ext := path.Ext(v)
+	if len(ext) > 16 {
+		ext = ""
+	}
+	sum := sha256.Sum256([]byte(v))
+	suffix := "_" + hex.EncodeToString(sum[:4]) + ext
+	keep := maxComponentBytes - len(suffix)
+	stem := v[:keep]
+	for !utf8.ValidString(stem) {
+		stem = stem[:len(stem)-1]
+	}
+	return stem + suffix
+}
+
+var windowsReservedNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM0": true, "COM1": true, "COM2": true, "COM3": true, "COM4": true,
+	"COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT0": true, "LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true,
+	"LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
+func isWindowsReservedName(v string) bool {
+	stem := v
+	if i := strings.IndexByte(stem, '.'); i >= 0 {
+		stem = stem[:i]
+	}
+	return windowsReservedNames[strings.ToUpper(strings.TrimSpace(stem))]
 }
 
 func sanitizeRelativePath(v string) (string, error) {
@@ -457,7 +584,12 @@ func writeMetadata(root *os.Root, name string, metadata Metadata) error {
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
-	if err := root.WriteFile(name, b, 0o644); err != nil {
+	tmpName, _, _, err := writeTemp(root, name, bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("write metadata: %w", err)
+	}
+	if err := root.Rename(tmpName, name); err != nil {
+		_ = root.Remove(tmpName)
 		return fmt.Errorf("write metadata: %w", err)
 	}
 	return nil

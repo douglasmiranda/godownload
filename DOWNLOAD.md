@@ -61,6 +61,22 @@ file is loaded and validated before selection, so an invalid unselected task sti
 prevents the run. If any requested name is not a key under `downloads`, no tasks
 run. Summaries and JSON reports count and include only the tasks that ran.
 
+## Checking a Config Before Running
+
+```bash
+godownload -config download.yaml -validate
+godownload -config download.yaml -dry-run
+godownload -version
+```
+
+| Flag | Behavior |
+|---|---|
+| `-validate` | Loads and validates the config, prints diagnostics, and exits without any network access. |
+| `-dry-run` | Fetches selector pages and `url_gen_file` URLs to discover links, then lists each file that would be downloaded and where it would be saved. Downloads no files, runs no hooks, and reports files that would be skipped. |
+| `-version` | Prints the version and exits. |
+
+Exit codes: `0` when every task succeeded, `1` when any task or the config failed, `2` for invalid command-line usage (unknown flag, unknown `-tasks` name, unexpected argument), and `130` when the run was interrupted with Ctrl+C or SIGTERM. On the first Ctrl+C, running tasks are cancelled, partial files are removed, and the report is still written; a second Ctrl+C exits immediately. Tasks that never started, because of an interruption or `stop_all_tasks`, are listed as `not_run` in the report.
+
 ## YAML Layout
 
 ```yaml
@@ -90,6 +106,7 @@ Highest to lowest precedence during task resolution:
 | Topic | Behavior |
 |---|---|
 | Variable syntax | Use `$VAR_NAME` or `${VAR_NAME}` in strings. |
+| Literal dollar sign | Write `$$`, for example `price is $$5` becomes `price is $5`. |
 | Missing variable | Validation diagnostic is produced and token stays unresolved. |
 | `env_file` paths | Relative values resolve from YAML config directory. Missing files are ignored. |
 
@@ -112,7 +129,7 @@ Everything under `config` is global: worker-level settings and default values in
 |---|---|---|---|---|
 | `task_concurrency` | `int` | `5` | No | Number of tasks processed concurrently. Must be `> 0`. |
 | `downloads_per_task_concurrency` | `int` | `3` | No | Default per-task download concurrency. Must be `> 0`. |
-| `log_level` | `string` | `INFO` | No | Worker log level. |
+| `log_level` | `string` | `INFO` | No | `INFO` or `DEBUG` (case-insensitive). `DEBUG` writes each request, retry, redirect, skipped link and saved file to stderr, with secrets redacted. |
 
 ### Global Default Task Options
 
@@ -132,7 +149,7 @@ All options below are optional. If set here, tasks inherit them unless task-leve
 | `treat_warnings_as_errors` | `bool` | `false` | Promotes warnings to task errors. |
 | `stop_all_tasks.on_runtime_error` | `bool` | `false` | Marks abort-all when runtime error happens. |
 | `stop_all_tasks.on_http_code` | `[]int` | `[]` | Marks abort-all for matching HTTP codes after retries finish. |
-| `timeout` | `int` | `0` | Request timeout seconds. Must be `>= 0`. |
+| `timeout` | `int` | `30` | Seconds to wait without receiving any data. See [Timeouts](#timeouts). Must be `>= 0`; `0` uses the default. |
 | `download_limit` | `int` | `0` | Max candidate URLs downloaded per task (`0` means unlimited). |
 | `selector_matches_limit` | `int` | `0` | Max selector matches parsed per page (`0` means unlimited). |
 | `retry` | `bool` or `object` | `false` | Retry policy. `true` enables defaults. |
@@ -140,7 +157,7 @@ All options below are optional. If set here, tasks inherit them unless task-leve
 | `auth` | `object` | none | Global authentication defaults. |
 | `security` | `object` | see section | Global security defaults. |
 | `hooks` | `object` | none | Global shell hook defaults inherited by tasks. |
-| `max_depth` | `int` | `1` | Selector crawl depth. Must be `>= 1`. |
+| `max_depth` | `int` | `1` | Levels of HTML pages read for links when `selector` is set. Must be `>= 1`. |
 | `save.base_download_dir` | `string` | `.` | Base output directory. |
 | `save.filename_template` | `string` | `{{.ORIGINAL_FILENAME}}` | Relative output path template used when `save.filename` is empty. |
 | `save.filename` | `string` | `""` | Fixed output filename for single-URL tasks only. |
@@ -192,7 +209,7 @@ Use this when you already know the file URL.
 | Option | Type | Default | Req. | Notes |
 |---|---|---|---|---|
 | `url` | `string` | none | Yes | Must resolve to `http` or `https`. |
-| `timeout` | `int` | `0` | No | Request timeout seconds. |
+| `timeout` | `int` | `30` | No | Seconds to wait without receiving any data. See [Timeouts](#timeouts). |
 | `force_download` | `bool` | `false` | No | If file exists and false, file is skipped. |
 | `save.*` | `object` | inherited | No | Naming and output options. |
 
@@ -234,7 +251,17 @@ Use this when URL points to a page that contains download links.
 | `regex_filter` | `string` | `""` | No | Regex against element text. Must compile. |
 | `attr_val_regex_filter` | `string` | `""` | No | Regex against extracted attribute value. Must compile. |
 | `selector_matches_limit` | `int` | `0` | No | Stop extraction after N selector matches per page. |
-| `max_depth` | `int` | `1` | No | Recursive crawl depth when following discovered links. |
+| `max_depth` | `int` | `1` | No | Levels of HTML pages read for links. `1` reads only the task URL page(s). |
+
+How links are handled:
+
+- Relative links are resolved against the page URL after redirects, honoring a `<base href>` element.
+- Links with other schemes (`mailto:`, `javascript:`, `data:`, ...) and fragment-only links (`#top`) are ignored. Fragments are removed, and duplicate links are downloaded once.
+- A link that fails `allow_insecure_http`, `allowed_domains` or `allowed_file_types` is skipped, not reported as an error. If no links are left, the "selector produced zero matches" warning says how many were skipped.
+- If the task URL page itself fails (HTTP error, timeout, blocked by security policy), the task fails.
+- With `max_depth` > 1, links that point to HTML pages are opened and searched with the same selector, level by level. Those pages are only read for links, not saved. On the last level, every matching link is downloaded. Pages larger than 64 MiB are rejected.
+- Before the last level, a link whose extension marks a file (for example `.pdf`, `.zip`, `.json`) is downloaded without being opened as a page. Links without an extension, or with a page extension such as `.html` or `.php`, are requested first; if the response is not HTML, the request is dropped after the headers and the link is downloaded as a file.
+- Crawling stops early once `download_limit` files have been found, and after 1000 linked pages per task. Hitting the page limit produces a warning saying how many pages were not read.
 
 Minimal example:
 
@@ -295,7 +322,7 @@ Use this when URLs come from patterns, lists, files, or date ranges.
 | Option | Type | Default | Req. | Notes |
 |---|---|---|---|---|
 | `url_gen_file.var_name` | `string` | none | Yes | Must be referenced in `url` as `{{.VAR_NAME}}`. |
-| `url_gen_file.file` | `string` | none | Yes | Local file path or URL. Relative paths resolve from config directory. |
+| `url_gen_file.file` | `string` | none | Yes | Local file path or `http(s)` URL. Relative paths resolve from config directory. One value per line; blank lines and lines starting with `#` are skipped, and a UTF-8 BOM or Windows line endings are handled. A URL is fetched with the task's `security`, `auth` and `retry` settings and may be up to 32 MiB. |
 
 #### `url_gen_dates`
 
@@ -316,6 +343,10 @@ Example:
 - Query-based variable (path may stay the same): `https://example.com/files?file={{.N}}.zip`
 
 For query-based patterns, prefer setting `save.filename_template` explicitly, for example using `{{.URL}}`.
+
+#### Duplicate Generated URLs
+
+If a generator produces the same URL more than once, it is downloaded once.
 
 #### URL Generation Memory Note
 
@@ -382,12 +413,18 @@ Use this when endpoints are unstable or CI must fail deterministically.
 
 | Option | Type | Default | Req. | Notes |
 |---|---|---|---|---|
-| `retry` | `bool` or `object` | `false` | No | `true` enables retry defaults. Object enables retry with explicit fields. |
-| `retry.on_runtime_error` | `bool` | `true` (when retry is enabled) | No | Runtime/network errors retry when true. |
-| `retry.on_http_code` | `[]int` | `[]` | No | If empty: retry all status codes `>= 400`. If set: retry only listed codes. |
+| `retry` | `bool` or `object` | `false` | No | `true` enables retry defaults. Object enables retry; unset fields use the defaults below. |
+| `retry.on_runtime_error` | `bool` | `true` | No | Network errors and timeouts are retried when true. |
+| `retry.on_http_code` | `[]int` | `[]` | No | If empty: retry `408`, `425`, `429`, `500`, `502`, `503` and `504`. If set: retry only listed codes. |
 | `retry.retries` | `int` | `3` | No | Number of retries after initial attempt. Must be `>= 0`. |
-| `retry.delay` | `int` | `1` | No | Base delay in seconds. Must be `>= 0`. |
+| `retry.delay` | `int` | `1` | No | Base delay in seconds. Must be `>= 0`; `0` retries immediately. |
 | `retry.exponential_backoff` | `bool` | `true` | No | Delay scales as `delay * 2^(attempt-1)`. |
+
+Retries never wait longer than 5 minutes. When a response has a `Retry-After` header (seconds or an HTTP date) asking for a longer wait than the backoff, that wait is used, up to the same limit. Certificate errors and failures that cannot change on a retry (security policy, `allowed_file_types`, `max_download_size`, disk errors) are not retried. A download that breaks off midway is retried from the start; the partial data is discarded.
+
+#### Timeouts
+
+`timeout` is the number of seconds to wait without receiving any data: while connecting, while waiting for the response, and between chunks of the body. It is not a limit on the total download time, so a large file that keeps arriving is never cut off, while a stalled one fails after `timeout` seconds. The default is 30 seconds.
 
 #### Stop-All Options
 
@@ -403,7 +440,7 @@ Use this when endpoints are unstable or CI must fail deterministically.
 | `treat_warnings_as_errors` | `bool` | `false` | No | Warning messages are promoted to errors at task finalization. |
 | `download_limit` | `int` | `0` | No | Truncates candidate URL list before download loop. |
 | `selector_matches_limit` | `int` | `0` | No | Limits extraction pass per page. |
-| `timeout` | `int` | `0` | No | Request timeout seconds. |
+| `timeout` | `int` | `30` | No | Seconds to wait without receiving any data. See [Timeouts](#timeouts). |
 
 Minimal example:
 
@@ -440,7 +477,36 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 
 Hooks run after the final download outcome is known, outside the retry loop. Success means the task has no errors after warning promotion; warning-only results still run `on_success` unless `treat_warnings_as_errors` promotes those warnings. A successful task runs `on_success`, a failed task runs `on_failure`, and `on_complete` runs after either outcome, even if the selected success/failure hook itself fails.
 
-Commands execute as `$SHELL -c "<command>"`; if `SHELL` is unset, `/bin/sh` is used. The working directory is the YAML config file directory. Commands inherit the process environment plus resolved config/task environment values, with task values taking precedence. Hooks use the task's run context, so cancellation can interrupt hook execution in addition to any configured hook timeout.
+Commands execute as `/bin/sh -c "<command>"`, or `cmd.exe /C "<command>"` on Windows, so the same config behaves the same for every user. To use another shell, set `SHELL` in the config: in `env_file`, root `env`, `config.env` or the task `env`. The `SHELL` of your login session (for example fish or zsh) is not used. A configured `SHELL` runs as `<shell> -c`; one named `cmd` uses `/C`, and `powershell` or `pwsh` use `-NoProfile -Command`.
+
+The working directory is the YAML config file directory. Commands inherit the process environment plus resolved config/task environment values, with task values taking precedence. Hooks use the task's run context, so cancellation can interrupt hook execution in addition to any configured hook timeout. When a hook times out or is cancelled, the hook and the processes it started are killed. On Windows only the shell process is killed, so programs it started in the background can keep running. Hooks do not run with `-dry-run`.
+
+Hooks also receive these environment variables:
+
+| Variable | Value |
+|---|---|
+| `GODOWNLOAD_TASK` | Task name. |
+| `GODOWNLOAD_STATUS` | `success` or `failure`. |
+| `GODOWNLOAD_RESULT_FILE` | Path to a temporary JSON file describing the outcome. It is deleted after the hooks finish. |
+
+Result file example:
+
+```json
+{
+  "task": "reports",
+  "status": "success",
+  "saved": [
+    {"path": "/data/reports/2026-01.pdf", "url": "https://example.com/2026-01.pdf", "size": 48213, "sha256": "9f86d0..."}
+  ],
+  "skipped": [
+    {"path": "/data/reports/2025-12.pdf", "url": "https://example.com/2025-12.pdf"}
+  ],
+  "warnings": ["https://example.com/2025-12.pdf: file already exists"],
+  "errors": []
+}
+```
+
+For example, `jq -r '.saved[].path' "$GODOWNLOAD_RESULT_FILE"` lists the files saved by the task.
 
 | Option | Type | Default | Req. | Notes |
 |---|---|---|---|---|
@@ -455,7 +521,7 @@ Example:
 ```yaml
 config:
   env:
-    SHELL: /bin/sh
+    SHELL: /bin/bash # optional; without it hooks use /bin/sh
 
 downloads:
   example_hooks:
@@ -487,17 +553,26 @@ Use this when tasks need credentials and trust restrictions.
 | `auth.key_value` | `string` | `""` | Conditional | Required for `api_key`. |
 | `auth.key_in` | `string` | `header` | No | Allowed: `header`, `query`, `cookie`. |
 
+#### Where Credentials Are Sent
+
+`auth` credentials are sent only to:
+
+- the host of the task `url`, including every generated URL,
+- the host of a `url_gen_file` URL,
+- hosts matching `security.allowed_domains`.
+
+Links found by a selector on other hosts are downloaded without credentials. When a redirect leads to another host, the `Authorization` header, cookies and the API key are removed from the request. If such a host answers `401` or `403`, the error says the credentials were not sent and suggests adding the host to `security.allowed_domains`.
+
 #### Security Options
 
 | Option | Type | Default | Req. | Notes |
 |---|---|---|---|---|
-| `security.follow_redirects` | `bool` | `true` | No | Redirect target is still validated by domain/scheme policy. |
+| `security.follow_redirects` | `bool` | `true` | No | Up to 10 redirects are followed. Each redirect target is checked against `allow_insecure_http` and `allowed_domains`. |
 | `security.allow_insecure_http` | `bool` | `false` | No | Must be true to allow `http://` URLs. |
-| `security.allow_self_signed_cert` | `bool` | `false` | No | Enables TLS skip-verify mode, which disables normal certificate verification for the request. |
-| `security.allowed_domains` | `[]string` | `[]` | No | If non-empty, only exact domain/subdomain matches are allowed for direct URLs, selector page fetches, downloads, and redirects. |
-| `security.allowed_file_types` | `[]string` | `[]` | No | Extension/content-type allow-list. Values may include leading dot or not; content types must match common `application/`, `image/`, or `text/` media types for the extension. |
+| `security.allow_self_signed_cert` | `bool` | `false` | No | Disables certificate verification for the same hosts that receive credentials (see [Where Credentials Are Sent](#where-credentials-are-sent)): the task URL hosts, a `url_gen_file` URL host, and `allowed_domains`. Other hosts reached through discovered links or redirects are still verified. |
+| `security.allowed_domains` | `[]string` | `[]` | No | If non-empty, only these domains and their subdomains are allowed; `example.com`, `.example.com` and `*.example.com` are equivalent. Applies to task URLs, `url_gen_file` URLs, selector pages, discovered links (skipped when they don't match), downloads and redirects. Matching hosts also receive `auth` credentials. |
+| `security.allowed_file_types` | `[]string` | `[]` | No | File types such as `pdf` or `tar.gz`, with or without a leading dot. The file name in the URL must end with `.<type>`, so URLs without an extension are blocked. The response `Content-Type` must also fit the type: `application/<ext>`, `image/<ext>`, `text/<ext>`, `audio/<ext>`, `video/<ext>`, a common alias (for example `application/x-zip-compressed` for `zip`) or the system MIME database entry. A missing or generic binary type such as `application/octet-stream` is accepted. Discovered links that fail this check are skipped. |
 | `security.max_download_size` | `size` | `0` | No | Rejects downloads larger than this. Checked against `Content-Length` upfront and enforced while reading; nothing is written to disk on rejection. `0` means no limit. Accepts bytes or suffixes: `500kb`, `10mb`, `1gb`. |
-| `security.max_in_memory_size` | `size` | `500mb` | No | Safety cap on how many bytes a single download may buffer in memory (the body is read into RAM). Defaults to 500MiB; set `0` to disable. Accepts bytes or suffixes: `500kb`, `10mb`, `1gb`. |
 
 Minimal example:
 
@@ -543,9 +618,9 @@ Use this when output naming, collisions, and metadata need strict control.
 | `save.base_download_dir` | `string` | `.` | No | Relative paths resolve from config file directory. |
 | `save.filename_template` | `string` | `{{.ORIGINAL_FILENAME}}` | No | Relative output path template used when `save.filename` is empty. Parent directories are created as needed. |
 | `save.filename` | `string` | `""` | No | Fixed name. Invalid when task can resolve multiple URLs. |
-| `save.override_if_exists` | `bool` | `false` | No | Overwrites only when `force_download: true`. |
+| `save.override_if_exists` | `bool` | `false` | No | Replaces the existing file only when `force_download: true`. |
 | `save.extension` | `string` | `""` | No | Extension override. |
-| `save.save_metadata` | `bool` | `false` | No | Writes `<saved_base>_metadata.json`. |
+| `save.save_metadata` | `bool` | `false` | No | Writes `<saved_base>_metadata.json`. See [Metadata Output Schema](#metadata-output-schema). |
 
 #### Filename Template Variables
 
@@ -563,6 +638,12 @@ Use this when output naming, collisions, and metadata need strict control.
 | `{{.UUID}}` | Random UUID | `bd80e0d3-ec89-4458-af5c-857f21cccb89` |
 
 `filename_template` may contain relative directories. Every path component is sanitized, and the resolved output is confined to `base_download_dir`. Absolute paths, parent traversal (`..`), and URL path traversal are rejected. `URL_PATH` and `URL_DIR` use the candidate download URL before the request; redirects do not change the already resolved destination.
+
+Each path component is limited to 200 bytes. Longer names are shortened and given a short hash, so two long names stay distinct, and the extension is kept. Windows reserved names such as `CON` or `aux.txt` get a `_` prefix.
+
+#### How Files Are Written
+
+A download is first written to a hidden temporary file (`.<name>.<random>.part`) in the target directory and moved to its final name only after the whole body has arrived. A failed, timed-out or interrupted download never leaves a partial file under the final name, and `override_if_exists` replaces the old file in one step. The body is saved exactly as the server sent it; for example, a response with `Content-Encoding: gzip` is saved compressed. The SHA-256 of the saved file is recorded in the metadata file and the hook result file.
 
 Minimal example:
 
@@ -631,11 +712,11 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 
 | Scenario | Effective behavior |
 |---|---|
-| `retry: true` without `retry.on_http_code` | Retries all HTTP status codes `>= 400` and runtime errors (`on_runtime_error` default true). |
+| `retry: true` without `retry.on_http_code` | Retries HTTP `408`, `425`, `429`, `500`, `502`, `503`, `504` and runtime errors (`on_runtime_error` default true). Other codes such as `404` fail at once. |
 | `retry.on_http_code` set | Retries only listed HTTP codes. Runtime errors still depend on `on_runtime_error`. |
 | `stop_all_tasks.on_http_code` with retry enabled | Stop-on-code check is evaluated after retry loop is exhausted. |
 | `stop_all_tasks` during selector/discovery or URL generation | Matching stop conditions set abort-all the same as download-phase failures; remaining tasks are cancelled promptly. |
-| `treat_warnings_as_errors: true` + retry enabled + `on_runtime_error: true` | Warning-only failures are promoted and retried. |
+| `treat_warnings_as_errors: true` + retry enabled + `on_runtime_error: true` | Warning-only failures are promoted and the task runs again, unless it already saved a file. |
 | `treat_warnings_as_errors: true` + `stop_all_tasks.on_runtime_error: true` | Promoted warning errors can set abort-all. |
 | Hook failure + `hooks.fail_task_if_error: false` | Hook failure is reported as a warning and may be promoted by `treat_warnings_as_errors`. |
 | Hook failure + `hooks.fail_task_if_error: true` | Hook failure becomes a task error and can trigger `stop_all_tasks.on_runtime_error`. |
@@ -646,8 +727,9 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | Scenario | Effective behavior |
 |---|---|
 | Existing file + `force_download: false` | File is skipped with warning reason "file already exists". |
-| Existing file + `force_download: true` + `save.override_if_exists: true` | Existing file is overwritten in place. |
+| Existing file + `force_download: true` + `save.override_if_exists: true` | Existing file is replaced once the new download is complete. |
 | Existing file + `force_download: true` + `save.override_if_exists: false` | New path is generated with suffix `_1`, `_2`, ... |
+| Two URLs in one task resolve to the same file | The second URL is skipped with a warning that names the first, unless `force_download: true` without `override_if_exists`, which saves it with a `_1` suffix. |
 | URL varies only by query params + default `save.filename_template` | Filename may repeat because default template uses path-derived `ORIGINAL_FILENAME`; use `save.filename_template` like `report-{{.URL}}.pdf` for uniqueness. |
 | `{{.URL_PATH}}` used across multiple domains | Identical URL paths may collide; prefix with `{{.DOMAIN}}/`. |
 | `save.filename` + `save.filename_template` | `save.filename` wins. Template is ignored and warning diagnostic is emitted. |
@@ -660,17 +742,21 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | `selector_matches_limit > 0` | Caps extraction loop per page. |
 | `download_limit > 0` | Caps final candidate URL list before download phase. |
 | Empty `selector` | No HTML extraction. Seed URLs are downloaded directly. |
-| `max_depth > 1` with selector | Breadth-first traversal up to configured depth. |
+| `max_depth > 1` with selector | Links to HTML pages are followed level by level up to the configured depth. Those pages are read for links and not saved. At most 1000 linked pages are read per task. |
+| `max_depth > 1` + `download_limit` | Crawling stops once `download_limit` files are found; the same files are downloaded as without stopping early. |
 | `max_depth > 1` without selector | No runtime effect; validation warning is emitted. |
+| Discovered link blocked by security policy or `allowed_file_types` | Skipped. Counted in the zero-matches warning when nothing is left. |
+| Task URL page fails (HTTP error, timeout, blocked by policy) | Task error. |
 
 ### Security Interactions
 
 | Scenario | Effective behavior |
 |---|---|
 | `allow_insecure_http: false` | `http://` URLs are blocked. |
-| `allowed_domains` set | Exact domain/subdomain filter applies to direct URLs, selector page fetches, downloads, and redirects. |
-| `allowed_file_types` set and URL has no extension | URL is blocked by extension policy. |
+| `allowed_domains` set | Domain/subdomain filter applies to direct URLs, `url_gen_file` URLs, selector page fetches, downloads, and redirects. |
+| `allowed_file_types` set and URL has no extension | URL is blocked by extension policy: an error for task URLs, skipped for discovered links. |
 | `allowed_file_types` set | Both URL extension and response content-type are checked. |
+| `auth` set and a link points to another host | The link is downloaded without credentials unless its host is in `allowed_domains`. |
 
 ## Validation Rules and Failure Modes
 
@@ -678,6 +764,10 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 
 | Rule | Result on violation |
 |---|---|
+| Unknown key anywhere in the file (for example a typo) | Error, with a suggestion such as `did you mean "retry"?` |
+| More than one YAML document in the file | Error |
+| `log_level` other than `DEBUG` or `INFO` | Error |
+| `retry` not a boolean or mapping | Error |
 | `url` missing | Error |
 | `task_concurrency <= 0` or `downloads_per_task_concurrency <= 0` | Error |
 | More than one `url_gen_*` block in same task | Error |
@@ -704,6 +794,8 @@ See also: [Interaction Matrix (Implicit Behavior)](#interaction-matrix-implicit-
 | No generated seed URLs | Warning, task completes | Error |
 | Selector resolves zero candidate URLs | Warning, task completes | Error |
 | Existing file skipped (`force_download: false`) | Warning entry | Error |
+| Two URLs in one task resolve to the same file | Warning entry, second URL skipped | Error |
+| Crawl reached the limit of 1000 linked pages | Warning entry, remaining pages not read | Error |
 | Hook command fails while `hooks.fail_task_if_error: false` | Warning entry | Error |
 
 ## Metadata Output Schema
@@ -713,11 +805,12 @@ When `save.save_metadata: true`, a JSON file is written beside the downloaded fi
 | Metadata key | Type | Description |
 |---|---|---|
 | `main_url` | `string` | Configured task URL (`downloads.<name>.url`). |
-| `download_url` | `string` | Final URL used for request. |
+| `download_url` | `string` | URL that was requested, before any redirects. |
 | `original_filename` | `string` | Filename inferred from URL path. |
 | `saved_filename` | `string` | Final path relative to `base_download_dir` after template/extension/collision resolution. |
 | `timestamp` | `string` | RFC3339 save timestamp in the process local timezone. |
 | `size` | `number` | Downloaded byte size. |
+| `sha256` | `string` | Hex SHA-256 of the saved file. |
 | `mime_type` | `string` | Response `Content-Type`. |
 | `download_task_name` | `string` | Task key under `downloads`. |
 
@@ -770,7 +863,6 @@ All canonical option paths below are covered in this document.
 | `config.save.override_if_exists` | [Global Default Task Options](#global-default-task-options) |
 | `config.save.extension` | [Global Default Task Options](#global-default-task-options) |
 | `config.save.save_metadata` | [Global Default Task Options](#global-default-task-options) |
-| `config.base_download_dir` | [Global Default Task Options](#global-default-task-options) |
 | `downloads.<name>.url` | [Core Task Options](#core-task-options) |
 | `downloads.<name>.downloads_per_task_concurrency` | [Worker Options](#worker-options) and [Global + Task Merge Semantics](#global--task-merge-semantics) |
 | `downloads.<name>.selector` | [2) Discover Links from HTML (Selector)](#2-discover-links-from-html-selector) |
@@ -784,7 +876,6 @@ All canonical option paths below are covered in this document.
 | `downloads.<name>.force_download` | [1) Static Single URL Download](#1-static-single-url-download) |
 | `downloads.<name>.treat_warnings_as_errors` | [4) Reliability and Fail-fast](#4-reliability-and-fail-fast) |
 | `downloads.<name>.save.*` | [6) File Save and Naming](#6-file-save-and-naming) |
-| `downloads.<name>.base_download_dir` | [Global Default Task Options](#global-default-task-options) and [Validation Rules and Failure Modes](#validation-rules-and-failure-modes) |
 | `downloads.<name>.stop_all_tasks.*` | [4) Reliability and Fail-fast](#4-reliability-and-fail-fast) |
 | `downloads.<name>.timeout` | [4) Reliability and Fail-fast](#4-reliability-and-fail-fast) |
 | `downloads.<name>.download_limit` | [4) Reliability and Fail-fast](#4-reliability-and-fail-fast) |

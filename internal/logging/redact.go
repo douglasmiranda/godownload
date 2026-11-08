@@ -3,6 +3,7 @@ package logging
 import (
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -30,6 +31,37 @@ func RedactText(s string) string {
 	out = apiKeyPattern.ReplaceAllString(out, "$1=[REDACTED]")
 	out = urlPattern.ReplaceAllStringFunc(out, redactURLString)
 	return out
+}
+
+// minSecretLength avoids replacing short values that would match ordinary
+// text, such as a one-character password.
+const minSecretLength = 4
+
+// NewRedactor returns a function that removes the given secret values, in
+// plain and URL-encoded form, before applying RedactText.
+func NewRedactor(secrets []string) func(string) string {
+	var values []string
+	for _, secret := range secrets {
+		for _, v := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
+			if len(v) >= minSecretLength && !slices.Contains(values, v) {
+				values = append(values, v)
+			}
+		}
+	}
+	if len(values) == 0 {
+		return RedactText
+	}
+	// Longer values first, so a secret that starts with another one is
+	// replaced completely.
+	slices.SortFunc(values, func(a, b string) int { return len(b) - len(a) })
+	replacements := make([]string, 0, len(values)*2)
+	for _, v := range values {
+		replacements = append(replacements, v, "[REDACTED]")
+	}
+	replacer := strings.NewReplacer(replacements...)
+	return func(s string) string {
+		return RedactText(replacer.Replace(s))
+	}
 }
 
 func redactURLString(raw string) string {

@@ -152,6 +152,20 @@ Task names are comma-separated. Spaces are allowed when the value is quoted, for
 `-tasks "task1, task2, task3"`. The complete config is loaded and validated before
 the selected tasks run, and an unknown task name stops the run.
 
+Check a config before downloading anything:
+
+```bash
+./dist/godownload -config ./download.yaml -validate   # config only, no network
+./dist/godownload -config ./download.yaml -dry-run    # list what would be downloaded and where
+./dist/godownload -version
+```
+
+Set `log_level: DEBUG` under `config` to log each request, retry and saved file to
+stderr. Press Ctrl+C once to stop cleanly (partial files are removed and the report is
+written), twice to exit immediately. See
+[Checking a Config Before Running](DOWNLOAD.md#checking-a-config-before-running) for
+exit codes.
+
 ### Task targets
 
 With [Task](https://taskfile.dev/) installed:
@@ -159,8 +173,13 @@ With [Task](https://taskfile.dev/) installed:
 ```bash
 task -t Taskfile.dist.yaml build
 task -t Taskfile.dist.yaml test
-task -t Taskfile.dist.yaml e2e-tests
+task -t Taskfile.dist.yaml check                # gofmt, go vet, tests with -race
+task -t Taskfile.dist.yaml e2e-tests            # success suite (needs Docker)
+task -t Taskfile.dist.yaml e2e-tests:warnings
+task -t Taskfile.dist.yaml e2e-tests:failures
 ```
 
-The default binary is generated at `dist/godownload`.
+The default binary is generated at `dist/godownload`. The e2e tasks start a local
+[go-httpbin](https://github.com/mccutchen/go-httpbin) container and a self-signed
+HTTPS server, and check the results with `jq`.
 

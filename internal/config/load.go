@@ -31,11 +31,14 @@ func loadConfig(data []byte, configDir string) (*Config, []Diagnostic, error) {
 		return nil, nil, err
 	}
 
-	diags, err := resolveEnvAndExpand(cfg, configDir)
+	diags := unknownFieldDiagnostics(data)
+
+	envDiags, err := resolveEnvAndExpand(cfg, configDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve environment variables: %w", err)
 	}
 
+	diags = append(diags, envDiags...)
 	diags = append(diags, Validate(cfg)...)
 	for _, d := range diags {
 		if d.Severity == SeverityError {

@@ -37,7 +37,8 @@ user-invocable: true
    - `attr` may be omitted for mapped tags (`a[href]`, `img[src]`, `link[href]`, `script[src]`, `iframe[src]`); set it for custom elements/attributes or add an intentional `config.default_attr_mappings` entry.
    - `regex_filter` matches trimmed element text; `attr_val_regex_filter` matches the raw extracted attribute value.
    - `selector_matches_limit` caps extracted URLs per page. `download_limit` caps the final candidate list.
-   - Set `max_depth > 1` only for recursive selector crawling.
+   - Set `max_depth > 1` only for recursive selector crawling. Pages followed for links are not saved; only links on the last level, or links that are not HTML pages, are downloaded. A crawl reads at most 1000 linked pages (with a warning) and stops early once `download_limit` files are found, so set `download_limit` on broad selectors.
+   - Discovered links that fail `allowed_domains`, `allow_insecure_http`, or `allowed_file_types` are skipped, not errors. A failing task URL page is an error.
 
 4. Make naming safe:
    - Use `save.base_download_dir`; relative paths resolve from the YAML file's directory.
@@ -51,18 +52,21 @@ user-invocable: true
 
 5. Add operational policy deliberately:
    - Shared task options may be placed under `config`; explicit task fields override them. Retry, auth, security, and hooks merge by field, and task `hooks.on_*: null` disables an inherited hook.
-   - `retry: true` means three retries with one-second exponential backoff, runtime retries enabled, and all HTTP statuses `>= 400` retryable.
-   - Use structured `retry` when retryable errors/codes, attempts, delay, or backoff must be explicit.
+   - `retry: true` means three retries with one-second exponential backoff, runtime retries enabled, and HTTP `408`, `425`, `429`, `500`, `502`, `503`, `504` retryable. `Retry-After` is honored, and waits are capped at 5 minutes.
+   - Use structured `retry` when retryable errors/codes, attempts, delay, or backoff must be explicit. Unset fields in the mapping keep the defaults; explicit `0` is respected.
+   - `timeout` is an idle timeout (seconds without receiving data, default 30), not a total download limit.
    - `treat_warnings_as_errors` promotes zero matches, no generated URLs, existing-file skips, and non-fatal hook failures.
    - `stop_all_tasks` can cancel other tasks; add it only when requested.
    - Set `downloads_per_task_concurrency`, `timeout`, and limits only from an explicit requirement or an established local convention.
    - Hooks execute shell commands after task outcome. Do not add hooks merely to validate a task; if requested, choose `fail_task_if_error` intentionally and remember `on_complete` runs after success or failure.
+   - Hooks run with `/bin/sh -c` (`cmd.exe /C` on Windows); the login shell is not used. Set `SHELL` in `config.env` or the task `env` only when commands need another shell, such as bash. Hooks receive `GODOWNLOAD_TASK`, `GODOWNLOAD_STATUS`, and `GODOWNLOAD_RESULT_FILE` (JSON with saved paths, URLs, sizes, and SHA-256).
 
 6. Apply security and secrets:
    - HTTPS is required by default. Set `security.allow_insecure_http: true` only for an intentional HTTP source.
-   - Redirect following defaults to enabled. `security.allowed_domains` must include source, discovered-link, and redirect destinations. `security.allowed_file_types` checks both URL extension and response content type.
-   - Consider `security.max_download_size`; downloads are buffered in memory and `security.max_in_memory_size` defaults to `500mb`.
-   - `security.allow_self_signed_cert` disables normal TLS certificate verification; use only when explicitly required.
+   - Redirect following defaults to enabled. `security.allowed_domains` must include source, discovered-link, and redirect destinations; it matches subdomains too. `security.allowed_file_types` requires the URL file name to end with the extension and checks the response content type (`application/octet-stream` and a missing type are accepted).
+   - Consider `security.max_download_size`. Downloads stream to a temporary file, so file size is not limited by memory.
+   - Auth credentials are sent only to the task URL host, a `url_gen_file` URL host, and `allowed_domains` hosts. When discovered links live on a CDN that needs the credentials, add that host to `allowed_domains`.
+   - `security.allow_self_signed_cert` disables TLS certificate verification for the task URL hosts, a `url_gen_file` URL host, and `allowed_domains`; use only when explicitly required.
    - Auth uses `auth.type: basic`, `bearer`, or `api_key`. Put secret values in environment variables, not YAML literals.
    - Environment precedence is task `env`, `config.env`, root `env`, `env_file`, then process environment.
 
@@ -72,7 +76,13 @@ user-invocable: true
 go run ./.agents/skills/godownload-download-tasks/scripts/validate-config.go path/to/download.yaml
 ```
 
-Fix every error and review every warning. This validator checks strict YAML fields, environment expansion, defaults, and config rules; it cannot prove that remote selectors, credentials, content types, or URLs work.
+Fix every error and review every warning. This validator checks unknown YAML fields, environment expansion, defaults, and config rules; it cannot prove that remote selectors, credentials, content types, or URLs work. `go run ./cmd/godownload -config path/to/download.yaml -validate` performs the same check.
+
+To check selectors and output paths against the real site without downloading files or running hooks, use a dry run. It fetches selector pages and `url_gen_file` URLs:
+
+```bash
+go run ./cmd/godownload -config path/to/download.yaml -tasks task_name -dry-run
+```
 
 Run the actual task only when network, file writes, and configured hooks are appropriate:
 

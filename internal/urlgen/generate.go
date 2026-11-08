@@ -83,7 +83,7 @@ func generateFromFile(tpl string, cfg *config.URLGenFile, fileLoader FileLoader)
 	out := []string{}
 	for _, l := range lines {
 		v := strings.TrimSpace(l)
-		if v == "" {
+		if v == "" || strings.HasPrefix(v, "#") {
 			continue
 		}
 		out = append(out, replacer(tpl, v))

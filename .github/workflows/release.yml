@@ -6,6 +6,9 @@ on:
 permissions:
   contents: read
 
+env:
+  VERSION: v0.0.${{ github.run_number }}
+
 jobs:
   test:
     name: Test
@@ -49,7 +52,7 @@ jobs:
 
           mkdir -p staging dist
           CGO_ENABLED=0 GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" \
-            go build -trimpath -ldflags="-s -w" \
+            go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
             -o "staging/${{ matrix.binary }}" ./cmd/godownload
 
       - name: Package binary
@@ -102,7 +105,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: v0.0.${{ github.run_number }}
+          TAG: ${{ env.VERSION }}
         run: |
           gh release create "${TAG}" dist/* \
             --title "${TAG}" \

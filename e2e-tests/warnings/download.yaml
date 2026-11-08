@@ -29,11 +29,10 @@ downloads:
     url: $HTTPBIN_URL/base64/PGEgaHJlZj0iL2ltYWdlL3BuZyI+aW1hZ2U8L2E+
     selector: ".missing"
 
-  existing_file_skipped:
-    # Both URLs have the same ORIGINAL_FILENAME. Serial execution guarantees
-    # that the second download sees the file written by the first.
+  same_file_collision_skipped:
+    # Both URLs have the same ORIGINAL_FILENAME, so the second one is skipped
+    # with a warning instead of overwriting the first.
     url: $HTTPBIN_URL/anything/warning-query-collision?item={{.ITEM}}
-    downloads_per_task_concurrency: 1
     url_gen_list:
       var_name: ITEM
       values: ["A", "B"]

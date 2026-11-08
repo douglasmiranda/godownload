@@ -2,25 +2,28 @@ package downloader
 
 import (
 	"context"
-	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
+	"log/slog"
 	"net/http"
-	"net/url"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/douglasmiranda/godownload/internal/config"
-	"github.com/douglasmiranda/godownload/internal/discovery"
 	"github.com/douglasmiranda/godownload/internal/hooks"
+	"github.com/douglasmiranda/godownload/internal/logging"
 	"github.com/douglasmiranda/godownload/internal/security"
 	"github.com/douglasmiranda/godownload/internal/storage"
 	"github.com/douglasmiranda/godownload/internal/urlgen"
 )
+
+// maxURLFileBytes bounds the size of a url_gen_file fetched over HTTP.
+const maxURLFileBytes = 32 << 20
 
 type URLFileLoader func(path string) ([]string, error)
 
@@ -33,23 +36,39 @@ type TaskProgress interface {
 }
 
 type HookRunner interface {
-	Run(ctx context.Context, name string, command string, timeoutSeconds int) hooks.Result
+	Run(ctx context.Context, name string, command string, timeoutSeconds int, env map[string]string) hooks.Result
 }
 
 type TaskResult struct {
 	TaskName string
 	Saved    []storage.SaveResult
+	// Planned lists the files a dry run would download.
+	Planned  []PlannedDownload
 	Errors   []error
 	Warnings []string
 	AbortAll bool
 }
 
+type PlannedDownload struct {
+	URL  string
+	Path string
+}
+
 type Service struct {
-	HTTPClient   *http.Client
+	// FileLoader overrides how url_gen_file files are read.
 	FileLoader   URLFileLoader
 	OnAbortAll   func()
 	TaskProgress TaskProgress
 	HookRunner   HookRunner
+	// Logger receives debug messages. Nil disables them.
+	Logger *slog.Logger
+	// Redact removes secrets from text written to logs and hook result files.
+	// Defaults to logging.RedactText.
+	Redact func(string) string
+	// DryRun fetches pages to discover links but downloads no files and runs
+	// no hooks. The files that would be downloaded are reported in
+	// TaskResult.Planned.
+	DryRun bool
 }
 
 func (s *Service) RunTask(ctx context.Context, taskName string, task *config.DownloadTask, workerCfg config.WorkerConfig) TaskResult {
@@ -66,84 +85,91 @@ func (s *Service) RunTask(ctx context.Context, taskName string, task *config.Dow
 
 	attempts := 1
 	if task.TreatWarningsAsErrors && task.Retry.Enabled && task.Retry.Config.OnRuntimeError {
-		attempts = task.Retry.Config.Retries + 1
-		if attempts <= 0 {
-			attempts = 1
-		}
+		attempts = max(task.Retry.Config.Retries+1, 1)
 	}
 
-	var last TaskResult
-	for attempt := 1; attempt <= attempts; attempt++ {
-		result := s.runTaskOnce(ctx, taskName, task, workerCfg)
-		last = result
-
+	var result TaskResult
+	for attempt := 1; ; attempt++ {
+		result = s.runTaskOnce(ctx, taskName, task, workerCfg)
 		if len(result.Errors) == 0 {
 			return s.finalizeWithHooks(ctx, taskName, task, result)
 		}
-
-		if shouldRetryPromotedWarnings(task, result, attempt, attempts) {
-			delay := backoffDelay(task.Retry.Config, attempt)
-			t := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				t.Stop()
-				result.Errors = append(result.Errors, ctx.Err())
-				return s.finalizeWithHooks(ctx, taskName, task, result)
-			case <-t.C:
-			}
-			continue
+		if attempt >= attempts || !shouldRetryPromotedWarnings(task, result) {
+			break
 		}
-
-		if hasOnlyPromotedWarningErrors(result.Errors) {
-			s.markAbortAll(task, &result, result.Errors[0])
+		s.debugf("task %s: retrying after warnings treated as errors", taskName)
+		if err := sleepCtx(ctx, backoffDelay(task.Retry.Config, attempt)); err != nil {
+			result.Errors = append(result.Errors, err)
+			return s.finalizeWithHooks(ctx, taskName, task, result)
 		}
-		return s.finalizeWithHooks(ctx, taskName, task, result)
 	}
 
-	if hasOnlyPromotedWarningErrors(last.Errors) {
-		s.markAbortAll(task, &last, last.Errors[0])
+	if hasOnlyPromotedWarningErrors(result.Errors) {
+		s.markAbortAll(task, &result, result.Errors[0])
 	}
-	return s.finalizeWithHooks(ctx, taskName, task, last)
+	return s.finalizeWithHooks(ctx, taskName, task, result)
 }
 
 func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config.DownloadTask, workerCfg config.WorkerConfig) TaskResult {
 	result := TaskResult{TaskName: taskName}
 
-	loader := s.FileLoader
-	if loader == nil {
-		loader = urlgen.LocalFileLoader
+	concurrency := task.DownloadsPerTaskConcurrency
+	if concurrency <= 0 {
+		concurrency = workerCfg.DownloadsPerTaskConcurrency
 	}
-	seedURLs, err := urlgen.Generate(task, urlgen.FileLoader(loader))
+	if concurrency <= 0 {
+		concurrency = config.DefaultDownloadsPerTaskConcurrency
+	}
+	client := newTaskClient(task, concurrency, s.debugf)
+
+	seedURLs, err := s.generateURLs(ctx, client, task)
 	if err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("generate urls: %w", err))
+		err = fmt.Errorf("generate urls: %w", err)
+		result.Errors = append(result.Errors, err)
 		s.markAbortAll(task, &result, err)
 		return finalizeTaskResult(task, result)
 	}
+	seedURLs = dedupeStrings(seedURLs)
 	if len(seedURLs) == 0 {
 		result.Warnings = append(result.Warnings, "no URLs generated; task skipped")
 		return finalizeTaskResult(task, result)
 	}
 
-	// Build the HTTP client once per task: its configuration (timeout, TLS,
-	// redirect policy) is task-level, and reusing a single client/transport
-	// lets connections be pooled across the task's downloads.
-	client := s.HTTPClient
-	if client == nil {
-		client = buildClient(task)
+	// Configured and generated URLs are trusted to receive credentials and
+	// must satisfy the security policy; violations are errors.
+	allowedSeeds := seedURLs[:0]
+	for _, u := range seedURLs {
+		if !security.IsURLAllowed(u, task.Security.AllowInsecureHTTP, task.Security.AllowedDomains) {
+			err := fmt.Errorf("URL blocked by security policy: %s", u)
+			result.Errors = append(result.Errors, err)
+			if s.markAbortAll(task, &result, err) {
+				return finalizeTaskResult(task, result)
+			}
+			continue
+		}
+		allowedSeeds = append(allowedSeeds, u)
 	}
+	client.trustURLs(allowedSeeds...)
 
-	candidateURLs, warn, err := s.resolveDownloadCandidates(ctx, client, seedURLs, task, workerCfg.DefaultAttrMapping)
-	if warn != "" {
-		result.Warnings = append(result.Warnings, warn)
-	}
-	if err != nil {
-		result.Errors = append(result.Errors, err)
-		s.markAbortAll(task, &result, err)
+	crawl := s.resolveDownloadCandidates(ctx, client, allowedSeeds, task, workerCfg.DefaultAttrMapping, concurrency)
+	result.Errors = append(result.Errors, crawl.errors...)
+	result.Warnings = append(result.Warnings, crawl.warnings...)
+	if crawl.abort != nil {
+		s.markAbortAll(task, &result, crawl.abort)
 		return finalizeTaskResult(task, result)
 	}
-	candidateURLs = dedupeStrings(candidateURLs)
+	candidateURLs := dedupeStrings(crawl.candidates)
 	if len(candidateURLs) == 0 {
-		result.Warnings = append(result.Warnings, "no candidate URLs found; task skipped")
+		if len(result.Errors) == 0 {
+			msg := "no candidate URLs found; task skipped"
+			if strings.TrimSpace(task.Selector) != "" {
+				msg = "selector produced zero matches"
+			}
+			if crawl.blocked > 0 {
+				msg += fmt.Sprintf(" (%d discovered link(s) skipped by security policy)", crawl.blocked)
+			}
+			result.Warnings = append(result.Warnings, msg)
+		}
 		return finalizeTaskResult(task, result)
 	}
 	if task.DownloadLimit > 0 && len(candidateURLs) > task.DownloadLimit {
@@ -154,13 +180,7 @@ func (s *Service) runTaskOnce(ctx context.Context, taskName string, task *config
 		s.TaskProgress.TaskTotal(taskName, len(candidateURLs))
 	}
 
-	concurrency := task.DownloadsPerTaskConcurrency
-	if concurrency <= 0 {
-		concurrency = workerCfg.DownloadsPerTaskConcurrency
-	}
-	if concurrency <= 0 {
-		concurrency = config.DefaultDownloadsPerTaskConcurrency
-	}
+	claims := &targetClaims{byPath: map[string]string{}}
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -184,7 +204,16 @@ downloadLoop:
 				defer s.TaskProgress.TaskFileDone(taskName)
 			}
 
-			saveRes, dlErr := s.downloadAndSave(ctx, client, taskName, task, downloadURL)
+			target, saveRes, dlErr := s.planDownload(claims, task, downloadURL)
+			if dlErr == nil && !saveRes.Skipped {
+				if s.DryRun {
+					mu.Lock()
+					result.Planned = append(result.Planned, PlannedDownload{URL: downloadURL, Path: target.Path()})
+					mu.Unlock()
+					return
+				}
+				saveRes, dlErr = s.downloadAndSave(ctx, client, taskName, task, downloadURL, target)
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if dlErr != nil {
@@ -201,8 +230,125 @@ downloadLoop:
 		}(u)
 	}
 	wg.Wait()
+	if err := ctx.Err(); err != nil && !result.AbortAll && !slices.ContainsFunc(result.Errors, func(e error) bool { return errors.Is(e, err) }) {
+		result.Errors = append(result.Errors, err)
+	}
 
 	return finalizeTaskResult(task, result)
+}
+
+// generateURLs expands the task's URL generators. url_gen_file may point to a
+// local file or to an http(s) URL fetched with the task's client.
+func (s *Service) generateURLs(ctx context.Context, client *taskClient, task *config.DownloadTask) ([]string, error) {
+	loader := s.FileLoader
+	if loader == nil {
+		loader = func(path string) ([]string, error) {
+			if !isHTTPURL(path) {
+				return urlgen.LocalFileLoader(path)
+			}
+			if !security.IsURLAllowed(path, task.Security.AllowInsecureHTTP, task.Security.AllowedDomains) {
+				return nil, fmt.Errorf("url_gen_file URL blocked by security policy: %s", path)
+			}
+			client.trustURLs(path)
+			var lines []string
+			err := client.get(ctx, path, func(_ *http.Response, body io.Reader) error {
+				var err error
+				lines, err = urlgen.ReadLines(newLimitReader(body, maxURLFileBytes, fmt.Errorf("url_gen_file is larger than %d bytes", maxURLFileBytes)))
+				return err
+			})
+			return lines, err
+		}
+	}
+	return urlgen.Generate(task, urlgen.FileLoader(loader))
+}
+
+func isHTTPURL(v string) bool {
+	lower := strings.ToLower(strings.TrimSpace(v))
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+}
+
+// targetClaims records which URL a destination file belongs to within one
+// task run, so two different URLs resolving to the same file are reported
+// instead of one silently skipping or replacing the other.
+type targetClaims struct {
+	mu     sync.Mutex
+	byPath map[string]string
+}
+
+func (c *targetClaims) claim(path string, url string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if prev, ok := c.byPath[path]; ok {
+		return prev, false
+	}
+	c.byPath[path] = url
+	return "", true
+}
+
+// planDownload applies the checks that need no network access and resolves
+// where downloadURL would be saved. A returned SaveResult with Skipped set
+// means the file must not be downloaded.
+func (s *Service) planDownload(claims *targetClaims, task *config.DownloadTask, downloadURL string) (storage.Target, storage.SaveResult, error) {
+	if !security.IsURLAllowed(downloadURL, task.Security.AllowInsecureHTTP, task.Security.AllowedDomains) {
+		return storage.Target{}, storage.SaveResult{}, fmt.Errorf("URL blocked by security policy: %s", downloadURL)
+	}
+	if !security.IsAllowedByExtension(downloadURL, task.Security.AllowedFileTypes) {
+		return storage.Target{}, storage.SaveResult{}, fmt.Errorf("URL extension blocked by security.allowed_file_types: %s", downloadURL)
+	}
+
+	target, err := storage.ResolveTarget(task, downloadURL)
+	if err != nil {
+		return storage.Target{}, storage.SaveResult{}, err
+	}
+	if prev, ok := claims.claim(target.Path(), downloadURL); !ok {
+		// force_download without override keeps both files by adding a suffix.
+		if !task.ForceDownload || task.Save.OverrideIfExists {
+			return target, storage.SaveResult{
+				Skipped:       true,
+				SkipReason:    fmt.Sprintf("skipped because it resolves to the same file as %s (%s); use a save.filename_template with a unique part such as {{.URL}}", prev, target.Name()),
+				FilePath:      target.Path(),
+				SavedFileName: target.Name(),
+				DownloadURL:   downloadURL,
+			}, nil
+		}
+	}
+	skipRes, skip, err := storage.SkipIfExists(task, target)
+	if err != nil {
+		return storage.Target{}, storage.SaveResult{}, err
+	}
+	if skip {
+		skipRes.DownloadURL = downloadURL
+		return target, skipRes, nil
+	}
+	return target, storage.SaveResult{}, nil
+}
+
+func (s *Service) downloadAndSave(ctx context.Context, client *taskClient, taskName string, task *config.DownloadTask, downloadURL string, target storage.Target) (storage.SaveResult, error) {
+	limit := task.Security.MaxDownloadSize.Int64()
+	var saved storage.SaveResult
+	err := client.get(ctx, downloadURL, func(resp *http.Response, body io.Reader) error {
+		contentType := resp.Header.Get("Content-Type")
+		if !security.IsAllowedByContentType(contentType, task.Security.AllowedFileTypes) {
+			return fmt.Errorf("response content-type blocked by security.allowed_file_types: %s", contentType)
+		}
+		if limit > 0 {
+			if resp.ContentLength > limit {
+				return fmt.Errorf("download size %d exceeds security.max_download_size %d for %s", resp.ContentLength, limit, downloadURL)
+			}
+			body = newLimitReader(body, limit, permanent(fmt.Errorf("download exceeds security.max_download_size %d for %s", limit, downloadURL)))
+		}
+		res, err := storage.SaveToTarget(taskName, task, downloadURL, target, body, contentType)
+		if err != nil {
+			return err
+		}
+		saved = res
+		return nil
+	})
+	if err != nil {
+		return storage.SaveResult{}, err
+	}
+	s.debugf("saved %s to %s (%d bytes)", downloadURL, saved.FilePath, saved.Size)
+	return saved, nil
 }
 
 func finalizeTaskResult(task *config.DownloadTask, result TaskResult) TaskResult {
@@ -219,7 +365,7 @@ func finalizeTaskResult(task *config.DownloadTask, result TaskResult) TaskResult
 }
 
 func (s *Service) finalizeWithHooks(ctx context.Context, taskName string, task *config.DownloadTask, result TaskResult) TaskResult {
-	if task == nil || !hasHooks(task.Hooks) {
+	if task == nil || s.DryRun || !hasHooks(task.Hooks) {
 		return result
 	}
 
@@ -229,12 +375,28 @@ func (s *Service) finalizeWithHooks(ctx context.Context, taskName string, task *
 		runner = hooks.Runner{Env: task.HookEnv, WorkDir: task.HookConfigDir}
 	}
 
+	status := "failure"
+	if wasSuccessful {
+		status = "success"
+	}
+	env := map[string]string{
+		"GODOWNLOAD_TASK":   taskName,
+		"GODOWNLOAD_STATUS": status,
+	}
+	resultFile, err := s.writeHookResultFile(taskName, status, result)
+	if err != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("task %s: could not write hook result file: %v", taskName, err))
+	} else {
+		env["GODOWNLOAD_RESULT_FILE"] = resultFile
+		defer os.Remove(resultFile)
+	}
+
 	initialErrorCount := len(result.Errors)
 	for _, hook := range selectedHooks(task.Hooks, wasSuccessful) {
 		if hook.command == nil {
 			continue
 		}
-		hookResult := runner.Run(ctx, hook.name, hook.command.Command, task.Hooks.Timeout)
+		hookResult := runner.Run(ctx, hook.name, hook.command.Command, task.Hooks.Timeout, env)
 		if hookResult.Err == nil {
 			continue
 		}
@@ -254,6 +416,66 @@ func (s *Service) finalizeWithHooks(ctx context.Context, taskName string, task *
 		s.markAbortAll(task, &result, result.Errors[len(result.Errors)-1])
 	}
 	return result
+}
+
+type hookResultFile struct {
+	Task     string          `json:"task"`
+	Status   string          `json:"status"`
+	Saved    []hookFileEntry `json:"saved"`
+	Skipped  []hookFileEntry `json:"skipped"`
+	Warnings []string        `json:"warnings"`
+	Errors   []string        `json:"errors"`
+}
+
+type hookFileEntry struct {
+	Path   string `json:"path"`
+	URL    string `json:"url"`
+	Size   int64  `json:"size,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
+}
+
+// writeHookResultFile writes the task outcome as JSON so hooks can process
+// the downloaded files. The caller removes the file after the hooks ran.
+func (s *Service) writeHookResultFile(taskName string, status string, result TaskResult) (string, error) {
+	out := hookResultFile{
+		Task:     taskName,
+		Status:   status,
+		Saved:    []hookFileEntry{},
+		Skipped:  []hookFileEntry{},
+		Warnings: []string{},
+		Errors:   []string{},
+	}
+	for _, saved := range result.Saved {
+		entry := hookFileEntry{Path: saved.FilePath, URL: s.redact(saved.DownloadURL), Size: saved.Size, SHA256: saved.SHA256}
+		if saved.Skipped {
+			out.Skipped = append(out.Skipped, entry)
+		} else {
+			out.Saved = append(out.Saved, entry)
+		}
+	}
+	for _, w := range result.Warnings {
+		out.Warnings = append(out.Warnings, s.redact(w))
+	}
+	for _, e := range result.Errors {
+		out.Errors = append(out.Errors, s.redact(e.Error()))
+	}
+
+	f, err := os.CreateTemp("", "godownload-result-*.json")
+	if err != nil {
+		return "", err
+	}
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 type hookSelection struct {
@@ -284,12 +506,18 @@ func formatHookFailure(taskName string, result hooks.Result) string {
 	return fmt.Sprintf("task %s %s", taskName, msg)
 }
 
-func shouldRetryPromotedWarnings(task *config.DownloadTask, result TaskResult, attempt int, attempts int) bool {
+// shouldRetryPromotedWarnings reports whether the whole task should run again
+// because its only errors are promoted warnings. Tasks that already saved
+// files are not retried: a second run would only find those files and
+// report them as existing.
+func shouldRetryPromotedWarnings(task *config.DownloadTask, result TaskResult) bool {
 	if task == nil || !task.TreatWarningsAsErrors || !task.Retry.Enabled || !task.Retry.Config.OnRuntimeError {
 		return false
 	}
-	if attempt >= attempts {
-		return false
+	for _, saved := range result.Saved {
+		if !saved.Skipped {
+			return false
+		}
 	}
 	return hasOnlyPromotedWarningErrors(result.Errors)
 }
@@ -315,301 +543,6 @@ func (w warningAsError) Error() string {
 	return fmt.Sprintf("warning treated as error: %s", w.msg)
 }
 
-func (s *Service) resolveDownloadCandidates(ctx context.Context, client *http.Client, seedURLs []string, task *config.DownloadTask, defaultAttrMapping map[string]string) ([]string, string, error) {
-	if strings.TrimSpace(task.Selector) == "" {
-		return seedURLs, "", nil
-	}
-	maxDepth := task.MaxDepth
-	if maxDepth < 1 {
-		maxDepth = 1
-	}
-
-	frontier := append([]string{}, seedURLs...)
-	visited := map[string]struct{}{}
-	all := []string{}
-
-	for depth := 1; depth <= maxDepth; depth++ {
-		if err := ctx.Err(); err != nil {
-			return nil, "", err
-		}
-		nextFrontier := []string{}
-		for _, pageURL := range frontier {
-			if err := ctx.Err(); err != nil {
-				return nil, "", err
-			}
-			if _, seen := visited[pageURL]; seen {
-				continue
-			}
-			visited[pageURL] = struct{}{}
-			if !security.IsURLAllowed(pageURL, task.Security.AllowInsecureHTTP, task.Security.AllowedDomains) {
-				if shouldStopAllTasks(task, fmt.Errorf("selector page blocked by security policy: %s", pageURL)) {
-					return nil, "", fmt.Errorf("selector page blocked by security policy: %s", pageURL)
-				}
-				continue
-			}
-
-			body, _, err := s.fetchURL(ctx, client, task, pageURL)
-			if err != nil {
-				if shouldStopAllTasks(task, err) {
-					return nil, "", fmt.Errorf("fetch selector page %s: %w", pageURL, err)
-				}
-				continue
-			}
-			links, err := discovery.ExtractURLs(pageURL, strings.NewReader(string(body)), discovery.ExtractOptions{
-				Selector:             task.Selector,
-				Attr:                 task.Attr,
-				DefaultAttrMappings:  defaultAttrMapping,
-				RegexFilter:          task.RegexFilter,
-				AttrValRegexFilter:   task.AttrValRegexFilter,
-				SelectorMatchesLimit: task.SelectorMatchesLimit,
-			})
-			if err != nil {
-				if shouldStopAllTasks(task, err) {
-					return nil, "", fmt.Errorf("extract links from %s: %w", pageURL, err)
-				}
-				continue
-			}
-			all = append(all, links...)
-			if depth < maxDepth {
-				nextFrontier = append(nextFrontier, links...)
-			}
-		}
-		frontier = nextFrontier
-		if len(frontier) == 0 {
-			break
-		}
-	}
-
-	if len(all) == 0 {
-		return nil, "selector produced zero matches", nil
-	}
-	return dedupeStrings(all), "", nil
-}
-
-func (s *Service) downloadAndSave(ctx context.Context, client *http.Client, taskName string, task *config.DownloadTask, downloadURL string) (storage.SaveResult, error) {
-	if !security.IsURLAllowed(downloadURL, task.Security.AllowInsecureHTTP, task.Security.AllowedDomains) {
-		return storage.SaveResult{}, fmt.Errorf("URL blocked by security policy: %s", downloadURL)
-	}
-	if !security.IsAllowedByExtension(downloadURL, task.Security.AllowedFileTypes) {
-		return storage.SaveResult{}, fmt.Errorf("URL extension blocked by security.allowed_file_types: %s", downloadURL)
-	}
-
-	target, err := storage.ResolveTarget(task, downloadURL)
-	if err != nil {
-		return storage.SaveResult{}, err
-	}
-	if skipRes, skip, err := storage.SkipIfExists(task, target); err != nil {
-		return storage.SaveResult{}, err
-	} else if skip {
-		return skipRes, nil
-	}
-
-	body, contentType, err := s.fetchURL(ctx, client, task, downloadURL)
-	if err != nil {
-		return storage.SaveResult{}, err
-	}
-	if !security.IsAllowedByContentType(contentType, task.Security.AllowedFileTypes) {
-		return storage.SaveResult{}, fmt.Errorf("response content-type blocked by security.allowed_file_types: %s", contentType)
-	}
-
-	return storage.SaveToTarget(taskName, task, downloadURL, target, body, contentType)
-}
-
-func (s *Service) fetchURL(ctx context.Context, client *http.Client, task *config.DownloadTask, rawURL string) ([]byte, string, error) {
-	if client == nil {
-		client = buildClient(task)
-	}
-
-	attempts := 1
-	if task.Retry.Enabled {
-		attempts = task.Retry.Config.Retries + 1
-		if attempts <= 0 {
-			attempts = 1
-		}
-	}
-
-	var lastErr error
-	for attempt := 1; attempt <= attempts; attempt++ {
-		body, ct, code, err := s.doOnce(ctx, client, task, rawURL)
-		if err == nil {
-			return body, ct, nil
-		}
-		lastErr = err
-
-		if !task.Retry.Enabled || !shouldRetry(task.Retry.Config, err, code) || attempt == attempts {
-			break
-		}
-		delay := backoffDelay(task.Retry.Config, attempt)
-		t := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			t.Stop()
-			return nil, "", ctx.Err()
-		case <-t.C:
-		}
-	}
-
-	if shouldStopOnHTTPCode(task, codeFromError(lastErr)) {
-		return nil, "", fmt.Errorf("stop_all_tasks.on_http_code matched %d for %s: %w", codeFromError(lastErr), rawURL, lastErr)
-	}
-
-	return nil, "", lastErr
-}
-
-func (s *Service) doOnce(ctx context.Context, client *http.Client, task *config.DownloadTask, rawURL string) ([]byte, string, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, "", 0, fmt.Errorf("build request: %w", err)
-	}
-	if err := applyAuth(req, task.Auth); err != nil {
-		return nil, "", 0, err
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", 0, classifyNetworkError(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		io.Copy(io.Discard, resp.Body)
-		return nil, "", resp.StatusCode, httpStatusError{Code: resp.StatusCode, Err: httpStatusFailure(task, resp)}
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-	fileLimit := task.Security.MaxDownloadSize.Int64()
-	memLimit := task.Security.MaxInMemorySize.Int64()
-
-	// Reject early using the server-declared size when it is available.
-	if fileLimit > 0 && resp.ContentLength > fileLimit {
-		io.Copy(io.Discard, resp.Body)
-		return nil, contentType, resp.StatusCode, fmt.Errorf("download size %d exceeds security.max_download_size %d for %s", resp.ContentLength, fileLimit, rawURL)
-	}
-	if memLimit > 0 && resp.ContentLength > memLimit {
-		io.Copy(io.Discard, resp.Body)
-		return nil, contentType, resp.StatusCode, fmt.Errorf("download size %d exceeds security.max_in_memory_size %d for %s", resp.ContentLength, memLimit, rawURL)
-	}
-
-	readCap := minPositive(fileLimit, memLimit)
-	if readCap <= 0 {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, contentType, resp.StatusCode, fmt.Errorf("read response body: %w", err)
-		}
-		return body, contentType, resp.StatusCode, nil
-	}
-
-	// Read one extra byte so an oversized body is detectable even when
-	// Content-Length is unknown (e.g. chunked responses).
-	body, err := io.ReadAll(io.LimitReader(resp.Body, readCap+1))
-	if err != nil {
-		return nil, contentType, resp.StatusCode, fmt.Errorf("read response body: %w", err)
-	}
-	if int64(len(body)) > readCap {
-		if fileLimit > 0 && int64(len(body)) > fileLimit {
-			return nil, contentType, resp.StatusCode, fmt.Errorf("download exceeds security.max_download_size %d for %s", fileLimit, rawURL)
-		}
-		return nil, contentType, resp.StatusCode, fmt.Errorf("download exceeds security.max_in_memory_size %d for %s", memLimit, rawURL)
-	}
-	return body, contentType, resp.StatusCode, nil
-}
-
-// minPositive returns the smallest value greater than zero, or 0 when none of
-// the provided values are positive (meaning "no limit").
-func minPositive(values ...int64) int64 {
-	min := int64(0)
-	for _, v := range values {
-		if v <= 0 {
-			continue
-		}
-		if min == 0 || v < min {
-			min = v
-		}
-	}
-	return min
-}
-
-func buildClient(task *config.DownloadTask) *http.Client {
-	timeout := 30 * time.Second
-	if task.Timeout > 0 {
-		timeout = time.Duration(task.Timeout) * time.Second
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
-	} else {
-		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
-	}
-	transport.TLSClientConfig.InsecureSkipVerify = task.Security.AllowSelfSigned
-
-	c := &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-	}
-
-	if !followRedirectsEnabled(task) {
-		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		}
-	} else {
-		c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if !security.IsURLAllowed(req.URL.String(), task.Security.AllowInsecureHTTP, task.Security.AllowedDomains) {
-				return fmt.Errorf("redirect target blocked by security policy: %s", req.URL.String())
-			}
-			return nil
-		}
-	}
-	return c
-}
-
-func applyAuth(req *http.Request, auth *config.AuthConfig) error {
-	if auth == nil {
-		return nil
-	}
-	switch strings.ToLower(strings.TrimSpace(auth.Type)) {
-	case "basic":
-		req.SetBasicAuth(auth.Username, auth.Password)
-	case "bearer":
-		req.Header.Set("Authorization", "Bearer "+auth.Token)
-	case "api_key":
-		keyIn := strings.ToLower(strings.TrimSpace(auth.KeyIn))
-		switch keyIn {
-		case "", "header":
-			req.Header.Set(auth.KeyName, auth.KeyValue)
-		case "query":
-			q := req.URL.Query()
-			q.Set(auth.KeyName, auth.KeyValue)
-			req.URL.RawQuery = q.Encode()
-		case "cookie":
-			req.AddCookie(&http.Cookie{Name: auth.KeyName, Value: auth.KeyValue})
-		default:
-			return fmt.Errorf("unsupported auth.key_in: %s", auth.KeyIn)
-		}
-	default:
-		return fmt.Errorf("unsupported auth.type: %s", auth.Type)
-	}
-	return nil
-}
-
-func shouldRetry(cfg config.RetryConfig, err error, statusCode int) bool {
-	if err != nil {
-		if cfg.OnRuntimeError {
-			return true
-		}
-	}
-	if statusCode != 0 {
-		if len(cfg.OnHTTPCode) == 0 {
-			return statusCode >= 400
-		}
-		for _, c := range cfg.OnHTTPCode {
-			if c == statusCode {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (s *Service) markAbortAll(task *config.DownloadTask, result *TaskResult, err error) bool {
 	if !shouldStopAllTasks(task, err) {
 		return false
@@ -622,7 +555,7 @@ func (s *Service) markAbortAll(task *config.DownloadTask, result *TaskResult, er
 }
 
 func shouldStopAllTasks(task *config.DownloadTask, err error) bool {
-	if task == nil {
+	if task == nil || err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
 	if task.StopAllTasks.OnRuntimeError {
@@ -643,81 +576,18 @@ func shouldStopOnHTTPCode(task *config.DownloadTask, statusCode int) bool {
 	return false
 }
 
-func codeFromError(err error) int {
-	if err == nil {
-		return 0
+func (s *Service) debugf(format string, args ...any) {
+	if s == nil || s.Logger == nil {
+		return
 	}
-	var hsErr httpStatusError
-	if !errors.As(err, &hsErr) {
-		return 0
-	}
-	return hsErr.Code
+	s.Logger.Debug(s.redact(fmt.Sprintf(format, args...)))
 }
 
-func followRedirectsEnabled(task *config.DownloadTask) bool {
-	if task != nil && task.Security.FollowRedirects != nil {
-		return *task.Security.FollowRedirects
+func (s *Service) redact(v string) string {
+	if s != nil && s.Redact != nil {
+		return s.Redact(v)
 	}
-	return true
-}
-
-func httpStatusFailure(task *config.DownloadTask, resp *http.Response) error {
-	if resp.StatusCode >= 300 && resp.StatusCode <= 399 && !followRedirectsEnabled(task) {
-		msg := fmt.Sprintf("URL returned HTTP redirect %d but security.follow_redirects is false", resp.StatusCode)
-		if loc := strings.TrimSpace(resp.Header.Get("Location")); loc != "" {
-			msg += fmt.Sprintf(" (Location: %s)", loc)
-		}
-		return fmt.Errorf("HTTPError: %s", msg)
-	}
-	return fmt.Errorf("HTTPError: request failed with status %d", resp.StatusCode)
-}
-
-type httpStatusError struct {
-	Code int
-	Err  error
-}
-
-func (e httpStatusError) Error() string {
-	if e.Err != nil {
-		return e.Err.Error()
-	}
-	return fmt.Sprintf("HTTPError: request failed with status %d", e.Code)
-}
-
-func (e httpStatusError) Unwrap() error {
-	return e.Err
-}
-
-func backoffDelay(cfg config.RetryConfig, attempt int) time.Duration {
-	delay := cfg.Delay
-	if delay <= 0 {
-		delay = 1
-	}
-	d := time.Duration(delay) * time.Second
-	if cfg.ExponentialBackoff != nil && *cfg.ExponentialBackoff {
-		if attempt <= 1 {
-			return d
-		}
-		mult := 1 << (attempt - 1)
-		return d * time.Duration(mult)
-	}
-	return d
-}
-
-func classifyNetworkError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if ue, ok := err.(*url.Error); ok {
-		if ue.Timeout() {
-			return fmt.Errorf("TimeoutError: %w", err)
-		}
-		if _, ok := ue.Err.(net.Error); ok {
-			return fmt.Errorf("ConnectionError: %w", err)
-		}
-		return fmt.Errorf("ConnectionError: %w", err)
-	}
-	return err
+	return logging.RedactText(v)
 }
 
 func dedupeStrings(in []string) []string {

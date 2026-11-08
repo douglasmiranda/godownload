@@ -35,12 +35,12 @@ const (
 )
 
 var (
-	startFlag          = flag.Bool("start", false, "start the server in the background and exit once ready")
-	stopFlag           = flag.Bool("stop", false, "stop a server started with --start")
-	restartIfRunning   = flag.Bool("restart-if-running", false, "with --start, stop an existing instance of this server on the port before starting")
-	serveFlag          = flag.Bool("serve", false, "run the server in the foreground (used internally by --start)")
-	portFlag           = flag.String("port", defaultPort, "TCP port to listen on")
-	pidFileFlag        = flag.String("pid-file", "", "path to the PID file (default: next to this program)")
+	startFlag        = flag.Bool("start", false, "start the server in the background and exit once ready")
+	stopFlag         = flag.Bool("stop", false, "stop a server started with --start")
+	restartIfRunning = flag.Bool("restart-if-running", false, "with --start, stop an existing instance of this server on the port before starting")
+	serveFlag        = flag.Bool("serve", false, "run the server in the foreground (used internally by --start)")
+	portFlag         = flag.String("port", defaultPort, "TCP port to listen on")
+	pidFileFlag      = flag.String("pid-file", "", "path to the PID file (default: next to this program)")
 )
 
 func main() {

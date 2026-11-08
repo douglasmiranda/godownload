@@ -690,9 +690,7 @@ downloads:
 	}
 }
 
-func TestLoadFile_HooksExpandEnvAndSetRuntimeContext(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "download.yaml")
+func TestLoad_HooksExpandEnvAndSetRuntimeContext(t *testing.T) {
 	data := `
 env:
   HOOK_MSG: from-root
@@ -708,62 +706,65 @@ downloads:
       on_complete:
         command: echo $HOOK_MSG
 `
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "download.yaml")
 	if err := os.WriteFile(cfgPath, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg, _, err := LoadFile(cfgPath)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
+	cases := []struct {
+		name       string
+		load       func() (*Config, []Diagnostic, error)
+		wantHookWD string
+	}{
+		{name: "LoadFile", load: func() (*Config, []Diagnostic, error) { return LoadFile(cfgPath) }, wantHookWD: dir},
+		{name: "LoadBytes", load: func() (*Config, []Diagnostic, error) { return LoadBytes([]byte(data)) }, wantHookWD: "."},
 	}
-	task := cfg.Downloads["one"]
-	if task.Hooks.OnComplete == nil || task.Hooks.OnComplete.Command != "echo from-task" {
-		t.Fatalf("expected expanded task hook command, got %#v", task.Hooks.OnComplete)
-	}
-	if task.HookConfigDir != dir {
-		t.Fatalf("expected hook config dir %q, got %q", dir, task.HookConfigDir)
-	}
-	if task.HookEnv["HOOK_MSG"] != "from-task" {
-		t.Fatalf("expected task env to win, got %#v", task.HookEnv)
-	}
-	if task.HookEnv["SHELL"] != "/bin/sh" {
-		t.Fatalf("expected config env in hook env, got %#v", task.HookEnv)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, _, err := c.load()
+			if err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			task := cfg.Downloads["one"]
+			if task.Hooks.OnComplete == nil || task.Hooks.OnComplete.Command != "echo from-task" {
+				t.Fatalf("expected expanded task hook command, got %#v", task.Hooks.OnComplete)
+			}
+			if task.HookConfigDir != c.wantHookWD {
+				t.Fatalf("expected hook config dir %q, got %q", c.wantHookWD, task.HookConfigDir)
+			}
+			if task.HookEnv["HOOK_MSG"] != "from-task" {
+				t.Fatalf("expected task env to win, got %#v", task.HookEnv)
+			}
+			if task.HookEnv["SHELL"] != "/bin/sh" {
+				t.Fatalf("expected config env in hook env, got %#v", task.HookEnv)
+			}
+		})
 	}
 }
 
-func TestLoadBytes_HooksExpandEnvAndSetRuntimeContext(t *testing.T) {
+func TestLoadBytes_HookEnvExcludesProcessEnvironment(t *testing.T) {
+	t.Setenv("SHELL", "/usr/bin/fish")
 	data := []byte(`
 env:
-  HOOK_MSG: from-root
-config:
-  env:
-    SHELL: /bin/sh
+  ROOT_VAR: from-root
 downloads:
   one:
     url: https://example.com/file.zip
-    env:
-      HOOK_MSG: from-task
     hooks:
       on_complete:
-        command: echo $HOOK_MSG
+        command: echo done
 `)
-
 	cfg, _, err := LoadBytes(data)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	task := cfg.Downloads["one"]
-	if task.Hooks.OnComplete == nil || task.Hooks.OnComplete.Command != "echo from-task" {
-		t.Fatalf("expected expanded task hook command, got %#v", task.Hooks.OnComplete)
+	hookEnv := cfg.Downloads["one"].HookEnv
+	if _, ok := hookEnv["SHELL"]; ok {
+		t.Fatalf("expected the login SHELL not to reach the hook env, got %#v", hookEnv)
 	}
-	if task.HookConfigDir != "." {
-		t.Fatalf("expected hook config dir %q, got %q", ".", task.HookConfigDir)
-	}
-	if task.HookEnv["HOOK_MSG"] != "from-task" {
-		t.Fatalf("expected task env to win, got %#v", task.HookEnv)
-	}
-	if task.HookEnv["SHELL"] != "/bin/sh" {
-		t.Fatalf("expected config env in hook env, got %#v", task.HookEnv)
+	if hookEnv["ROOT_VAR"] != "from-root" {
+		t.Fatalf("expected root env in hook env, got %#v", hookEnv)
 	}
 }
 

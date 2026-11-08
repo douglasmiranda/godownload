@@ -29,6 +29,11 @@ func ExtractURLs(baseURL string, html io.Reader, opts ExtractOptions) ([]string,
 	if err != nil {
 		return nil, fmt.Errorf("parse base url: %w", err)
 	}
+	if href, ok := doc.Find("base[href]").First().Attr("href"); ok {
+		if u, err := url.Parse(strings.TrimSpace(href)); err == nil {
+			base = base.ResolveReference(u)
+		}
+	}
 
 	attr := strings.TrimSpace(opts.Attr)
 	if attr == "" {
@@ -79,11 +84,23 @@ func ExtractURLs(baseURL string, html io.Reader, opts ExtractOptions) ([]string,
 			return true
 		}
 
+		raw = strings.TrimSpace(raw)
+		if strings.HasPrefix(raw, "#") {
+			return true
+		}
 		u, err := url.Parse(raw)
 		if err != nil {
 			return true
 		}
 		resolved := base.ResolveReference(u)
+		// Links such as mailto:, javascript: or data: cannot be downloaded.
+		if resolved.Scheme != "http" && resolved.Scheme != "https" {
+			return true
+		}
+		// Fragments are never sent to the server; dropping them lets
+		// "file.pdf#page=2" and "file.pdf" dedupe to one download.
+		resolved.Fragment = ""
+		resolved.RawFragment = ""
 		out = append(out, resolved.String())
 
 		if opts.SelectorMatchesLimit > 0 && len(out) >= opts.SelectorMatchesLimit {

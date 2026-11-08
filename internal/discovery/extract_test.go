@@ -75,6 +75,45 @@ func TestExtractURLs_DefaultAttrMapping_WithComplexSelector(t *testing.T) {
 	}
 }
 
+func TestExtractURLs_SkipsNonHTTPLinksAndStripsFragments(t *testing.T) {
+	html := `
+<a href="mailto:me@example.com">mail</a>
+<a href="javascript:void(0)">js</a>
+<a href="data:text/plain,hi">data</a>
+<a href="#top">top</a>
+<a href="/doc.pdf#page=2">doc</a>
+<a href=" /spaced.pdf ">spaced</a>`
+	got, err := ExtractURLs("https://example.com/list/", strings.NewReader(html), ExtractOptions{
+		Selector:             "a",
+		DefaultAttrMappings:  map[string]string{"a": "href"},
+		SelectorMatchesLimit: 2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The limit counts only usable links.
+	want := []string{"https://example.com/doc.pdf", "https://example.com/spaced.pdf"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected URLs: %#v", got)
+	}
+}
+
+func TestExtractURLs_HonorsBaseHref(t *testing.T) {
+	html := `<html><head><base href="https://cdn.example.com/files/"></head>
+<body><a href="a.zip">a</a><a href="/root.zip">root</a></body></html>`
+	got, err := ExtractURLs("https://example.com/page", strings.NewReader(html), ExtractOptions{
+		Selector:            "a",
+		DefaultAttrMappings: map[string]string{"a": "href"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"https://cdn.example.com/files/a.zip", "https://cdn.example.com/root.zip"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected URLs: %#v", got)
+	}
+}
+
 func TestExtractURLs_DefaultAttrMapping_WithClassOnlySelector(t *testing.T) {
 	html := `<a class="download-link" href="/doc.pdf">Download</a>`
 	got, err := ExtractURLs("https://example.com", strings.NewReader(html), ExtractOptions{

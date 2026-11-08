@@ -1,6 +1,10 @@
 package config
 
-import "gopkg.in/yaml.v3"
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
 
 const (
 	DefaultTaskConcurrency             = 5
@@ -8,10 +12,9 @@ const (
 	DefaultLogLevel                    = "INFO"
 	DefaultFilenameTemplate            = "{{.ORIGINAL_FILENAME}}"
 	DefaultMaxDepth                    = 1
-	// DefaultMaxInMemorySize is the safety cap applied to how many bytes a
-	// single download may buffer in memory when the user has not configured
-	// security.max_in_memory_size explicitly.
-	DefaultMaxInMemorySize ByteSize = 500 << 20 // 500 MiB
+	// DefaultTimeoutSeconds is how long a request may go without receiving
+	// any data when the task does not configure timeout.
+	DefaultTimeoutSeconds = 30
 )
 
 type Config struct {
@@ -37,7 +40,6 @@ type WorkerConfig struct {
 	URLGenDates                 *URLGenDates      `yaml:"url_gen_dates"`
 	ForceDownload               bool              `yaml:"force_download"`
 	TreatWarningsAsErrors       bool              `yaml:"treat_warnings_as_errors"`
-	BaseDownloadDir             string            `yaml:"base_download_dir"`
 	StopAllTasks                StopAllTasks      `yaml:"stop_all_tasks"`
 	Timeout                     int               `yaml:"timeout"`
 	DownloadLimit               int               `yaml:"download_limit"`
@@ -83,7 +85,6 @@ type DownloadTask struct {
 	ForceDownload               bool              `yaml:"force_download"`
 	TreatWarningsAsErrors       bool              `yaml:"treat_warnings_as_errors"`
 	Save                        SaveConfig        `yaml:"save"`
-	BaseDownloadDir             string            `yaml:"base_download_dir"`
 	StopAllTasks                StopAllTasks      `yaml:"stop_all_tasks"`
 	Timeout                     int               `yaml:"timeout"`
 	DownloadLimit               int               `yaml:"download_limit"`
@@ -222,7 +223,7 @@ func (r *Retry) UnmarshalYAML(value *yaml.Node) error {
 	}
 
 	if value.Kind == yaml.MappingNode {
-		var cfg retryAlias
+		cfg := retryAlias(defaultRetryConfig())
 		if err := value.Decode(&cfg); err != nil {
 			return err
 		}
@@ -231,7 +232,7 @@ func (r *Retry) UnmarshalYAML(value *yaml.Node) error {
 		return nil
 	}
 
-	return nil
+	return fmt.Errorf("line %d: retry must be true, false, or a mapping of retry options", value.Line)
 }
 
 type AuthConfig struct {
@@ -254,8 +255,4 @@ type SecurityConfig struct {
 	// (checked against Content-Length upfront and enforced while reading).
 	// 0 means no limit. Accepts suffixes like 500kb, 10mb, 1gb.
 	MaxDownloadSize ByteSize `yaml:"max_download_size"`
-	// MaxInMemorySize caps how many bytes a single download may buffer in
-	// memory (the whole body is read into RAM). Defaults to
-	// DefaultMaxInMemorySize when unset; 0 disables the cap.
-	MaxInMemorySize ByteSize `yaml:"max_in_memory_size"`
 }

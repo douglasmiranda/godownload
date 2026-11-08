@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -14,47 +16,34 @@ import (
 func TestRun_NoTasks(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "download.yaml")
+	reportPath := filepath.Join(dir, "out", "report.json")
 	if err := os.WriteFile(cfg, []byte("downloads: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg, "-report-file", reportPath}, &out, &errOut)
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d, stderr=%s", exitCode, errOut.String())
 	}
 	if !strings.Contains(out.String(), "no download tasks configured") {
 		t.Fatalf("expected no tasks message, got %q", out.String())
 	}
-}
 
-func TestRun_TaskFailureSetsExitCode1(t *testing.T) {
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "download.yaml")
-	yml := `
-downloads:
-  bad:
-    url: https://example.com/file.pdf
-    security:
-      allowed_domains: ["blocked.test"]
-      allowed_file_types: ["pdf"]
-`
-	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
-		t.Fatal(err)
+	b, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("expected report file to be written: %v", err)
 	}
-
-	var out strings.Builder
-	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg}, &out, &errOut)
-	if exitCode != 1 {
-		t.Fatalf("expected exit code 1, got %d", exitCode)
+	var rr runReport
+	if err := json.Unmarshal(b, &rr); err != nil {
+		t.Fatalf("expected valid report json: %v", err)
 	}
-	if !strings.Contains(errOut.String(), "[error]") {
-		t.Fatalf("expected errors in stderr, got %q", errOut.String())
+	if rr.TaskCount != 0 {
+		t.Fatalf("expected task_count=0, got %d", rr.TaskCount)
 	}
-	if !strings.Contains(out.String(), "summary:") {
-		t.Fatalf("expected summary in stdout, got %q", out.String())
+	if rr.ReportVersion != reportSchemaVersion {
+		t.Fatalf("expected report_version=%q, got %q", reportSchemaVersion, rr.ReportVersion)
 	}
 }
 
@@ -80,7 +69,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg}, &out, &errOut)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
 	}
@@ -94,43 +83,6 @@ downloads:
 	}
 	if !strings.Contains(errOut.String(), "[error] a_task") || !strings.Contains(errOut.String(), "[error] z_task") {
 		t.Fatalf("expected both task errors in stderr, got %q", errOut.String())
-	}
-}
-
-func TestRun_TasksSelectsSingleTask(t *testing.T) {
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "download.yaml")
-	yml := `
-downloads:
-  selected:
-    url: https://example.com/selected.pdf
-    security:
-      allowed_domains: ["blocked.test"]
-      allowed_file_types: ["pdf"]
-  ignored:
-    url: https://example.com/ignored.pdf
-    security:
-      allowed_domains: ["blocked.test"]
-      allowed_file_types: ["pdf"]
-`
-	if err := os.WriteFile(cfg, []byte(yml), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var out strings.Builder
-	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg, "-tasks", "selected"}, &out, &errOut)
-	if exitCode != 1 {
-		t.Fatalf("expected exit code 1 from selected task, got %d", exitCode)
-	}
-	if !strings.Contains(out.String(), "task selected") {
-		t.Fatalf("expected selected task to run, got stdout %q", out.String())
-	}
-	if strings.Contains(out.String(), "task ignored") || strings.Contains(errOut.String(), "[error] ignored") {
-		t.Fatalf("expected ignored task not to run, stdout=%q stderr=%q", out.String(), errOut.String())
-	}
-	if !strings.Contains(out.String(), "summary: tasks=1") {
-		t.Fatalf("expected selected task count in summary, got %q", out.String())
 	}
 }
 
@@ -162,7 +114,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{
+	exitCode := run(context.Background(), []string{
 		"-config", cfg,
 		"-tasks", " z_task, a_task, z_task ",
 		"-report-file", reportPath,
@@ -191,10 +143,8 @@ downloads:
 	if rr.TaskCount != 2 || len(rr.Tasks) != 2 {
 		t.Fatalf("expected report to contain two selected tasks, got %+v", rr)
 	}
-	for _, task := range rr.Tasks {
-		if task.TaskName != "a_task" && task.TaskName != "z_task" {
-			t.Fatalf("unexpected unselected task in report: %+v", task)
-		}
+	if rr.Tasks[0].TaskName != "a_task" || rr.Tasks[1].TaskName != "z_task" {
+		t.Fatalf("expected report tasks sorted by name, got %+v", rr.Tasks)
 	}
 }
 
@@ -212,7 +162,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg, "-tasks", "missing_b,known,missing_a"}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg, "-tasks", "missing_b,known,missing_a"}, &out, &errOut)
 	if exitCode != 2 {
 		t.Fatalf("expected exit code 2 for unknown tasks, got %d", exitCode)
 	}
@@ -240,7 +190,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg, "-tasks", "selected"}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg, "-tasks", "selected"}, &out, &errOut)
 	if exitCode != 1 {
 		t.Fatalf("expected full config validation to fail, got exit code %d", exitCode)
 	}
@@ -269,7 +219,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg, "-output", "json"}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg, "-output", "json"}, &out, &errOut)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
 	}
@@ -306,8 +256,11 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	_ = run([]string{"-config", cfg}, &out, &errOut)
+	_ = run(context.Background(), []string{"-config", cfg}, &out, &errOut)
 
+	if !strings.Contains(errOut.String(), "[error] bad") || !strings.Contains(errOut.String(), "example.com/file.pdf") {
+		t.Fatalf("expected the blocked URL in stderr, got %q", errOut.String())
+	}
 	if strings.Contains(errOut.String(), "supersecret") {
 		t.Fatalf("expected stderr to redact token, got %q", errOut.String())
 	}
@@ -332,7 +285,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg}, &out, &errOut)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
 	}
@@ -342,37 +295,6 @@ downloads:
 	}
 	if !strings.Contains(stderr, "{{.X}}") {
 		t.Fatalf("expected helpful template hint in stderr, got %q", stderr)
-	}
-}
-
-func TestRun_WritesReportFile_NoTasks(t *testing.T) {
-	dir := t.TempDir()
-	cfg := filepath.Join(dir, "download.yaml")
-	reportPath := filepath.Join(dir, "out", "report.json")
-	if err := os.WriteFile(cfg, []byte("downloads: {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var out strings.Builder
-	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg, "-report-file", reportPath}, &out, &errOut)
-	if exitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d stderr=%s", exitCode, errOut.String())
-	}
-
-	b, err := os.ReadFile(reportPath)
-	if err != nil {
-		t.Fatalf("expected report file to be written: %v", err)
-	}
-	var rr runReport
-	if err := json.Unmarshal(b, &rr); err != nil {
-		t.Fatalf("expected valid report json: %v", err)
-	}
-	if rr.TaskCount != 0 {
-		t.Fatalf("expected task_count=0, got %d", rr.TaskCount)
-	}
-	if rr.ReportVersion != reportSchemaVersion {
-		t.Fatalf("expected report_version=%q, got %q", reportSchemaVersion, rr.ReportVersion)
 	}
 }
 
@@ -394,7 +316,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg, "-report-file", reportPath}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg, "-report-file", reportPath}, &out, &errOut)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
 	}
@@ -419,8 +341,20 @@ downloads:
 }
 
 func TestRun_TaskConcurrencyExecutesTasksInParallel(t *testing.T) {
+	// Each request waits until both have arrived, which only happens when
+	// the two tasks run at the same time.
+	var arrived atomic.Int32
+	bothArrived := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(400 * time.Millisecond)
+		if arrived.Add(1) == 2 {
+			close(bothArrived)
+		}
+		select {
+		case <-bothArrived:
+		case <-time.After(5 * time.Second):
+			http.Error(w, "tasks did not run in parallel", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -452,15 +386,9 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	start := time.Now()
-	exitCode := run([]string{"-config", cfg}, &out, &errOut)
-	elapsed := time.Since(start)
-
+	exitCode := run(context.Background(), []string{"-config", cfg}, &out, &errOut)
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d, stderr=%s", exitCode, errOut.String())
-	}
-	if elapsed >= 750*time.Millisecond {
-		t.Fatalf("expected parallel task execution to finish in under 750ms, took %s", elapsed)
 	}
 }
 
@@ -488,7 +416,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg}, &out, &errOut)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
 	}
@@ -498,8 +426,8 @@ downloads:
 	if !strings.Contains(out.String(), "warnings=0") {
 		t.Fatalf("expected warnings to be promoted and removed from warning count, got %q", out.String())
 	}
-	if !strings.Contains(out.String(), "errors=") {
-		t.Fatalf("expected errors count in summary, got %q", out.String())
+	if !strings.Contains(out.String(), "errors=1") {
+		t.Fatalf("expected the promoted warning in the error count, got %q", out.String())
 	}
 }
 
@@ -535,7 +463,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg, "-report-file", reportPath}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg, "-report-file", reportPath}, &out, &errOut)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d stdout=%s stderr=%s", exitCode, out.String(), errOut.String())
 	}
@@ -587,7 +515,7 @@ downloads:
 
 	var out strings.Builder
 	var errOut strings.Builder
-	exitCode := run([]string{"-config", cfg}, &out, &errOut)
+	exitCode := run(context.Background(), []string{"-config", cfg}, &out, &errOut)
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d stdout=%s stderr=%s", exitCode, out.String(), errOut.String())
 	}
@@ -596,5 +524,269 @@ downloads:
 	}
 	if !strings.Contains(out.String(), "warnings=0") {
 		t.Fatalf("expected warning to be promoted out of warning count, got %q", out.String())
+	}
+}
+
+func writeConfig(t *testing.T, dir string, yml string) string {
+	t.Helper()
+	path := filepath.Join(dir, "download.yaml")
+	if err := os.WriteFile(path, []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestRun_Version(t *testing.T) {
+	var out, errOut strings.Builder
+	if code := run(context.Background(), []string{"-version"}, &out, &errOut); code != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%s", code, errOut.String())
+	}
+	if !strings.HasPrefix(out.String(), "godownload ") {
+		t.Fatalf("expected version line, got %q", out.String())
+	}
+}
+
+func TestRun_RejectsPositionalArguments(t *testing.T) {
+	var out, errOut strings.Builder
+	if code := run(context.Background(), []string{"my.yaml"}, &out, &errOut); code != 2 {
+		t.Fatalf("expected exit code 2, got %d", code)
+	}
+	if !strings.Contains(errOut.String(), "use -config") {
+		t.Fatalf("expected hint about -config, got %q", errOut.String())
+	}
+}
+
+func TestRun_ValidateDoesNotDownload(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfg := writeConfig(t, dir, `
+downloads:
+  one:
+    url: `+server.URL+`/file.txt
+    security:
+      allow_insecure_http: true
+    save:
+      base_download_dir: `+filepath.Join(dir, "downloads")+`
+`)
+	var out, errOut strings.Builder
+	if code := run(context.Background(), []string{"-config", cfg, "-validate"}, &out, &errOut); code != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "config is valid: 1 task(s)") {
+		t.Fatalf("expected validation message, got %q", out.String())
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("expected no requests, got %d", requests.Load())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "downloads")); !os.IsNotExist(err) {
+		t.Fatalf("expected no download directory, stat err=%v", err)
+	}
+}
+
+func TestRun_ValidateReportsInvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeConfig(t, dir, `
+downloads:
+  bad:
+    url: https://example.com/file.pdf
+    retyr: true
+`)
+	var out, errOut strings.Builder
+	if code := run(context.Background(), []string{"-config", cfg, "-validate"}, &out, &errOut); code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(errOut.String(), "retry") {
+		t.Fatalf("expected unknown key diagnostic with suggestion, got %q", errOut.String())
+	}
+}
+
+func TestRun_DryRunListsFilesWithoutDownloadingOrRunningHooks(t *testing.T) {
+	var fileRequests atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<a href="/files/a.txt">a</a><a href="/files/b.txt">b</a>`))
+	})
+	mux.HandleFunc("/files/", func(w http.ResponseWriter, r *http.Request) {
+		fileRequests.Add(1)
+		_, _ = w.Write([]byte("content"))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	dir := t.TempDir()
+	downloads := filepath.Join(dir, "downloads")
+	hookMarker := filepath.Join(dir, "hook-ran")
+	cfg := writeConfig(t, dir, `
+config:
+  env:
+    SHELL: /bin/sh
+downloads:
+  site:
+    url: `+server.URL+`/
+    selector: a
+    security:
+      allow_insecure_http: true
+    save:
+      base_download_dir: `+downloads+`
+    hooks:
+      on_complete:
+        command: touch `+hookMarker+`
+`)
+	reportPath := filepath.Join(dir, "report.json")
+	var out, errOut strings.Builder
+	code := run(context.Background(), []string{"-config", cfg, "-dry-run", "-report-file", reportPath}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d stdout=%s stderr=%s", code, out.String(), errOut.String())
+	}
+	stdout := out.String()
+	for _, want := range []string{
+		"task site: would_download=2",
+		server.URL + "/files/a.txt -> " + filepath.Join(downloads, "a.txt"),
+		server.URL + "/files/b.txt -> " + filepath.Join(downloads, "b.txt"),
+		"dry-run summary: tasks=1 would_download=2",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("expected %q in stdout, got %q", want, stdout)
+		}
+	}
+	if fileRequests.Load() != 0 {
+		t.Errorf("expected no file requests, got %d", fileRequests.Load())
+	}
+	if _, err := os.Stat(downloads); !os.IsNotExist(err) {
+		t.Errorf("expected no download directory, stat err=%v", err)
+	}
+	if _, err := os.Stat(hookMarker); !os.IsNotExist(err) {
+		t.Errorf("expected hooks not to run, stat err=%v", err)
+	}
+
+	b, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rr runReport
+	if err := json.Unmarshal(b, &rr); err != nil {
+		t.Fatal(err)
+	}
+	if !rr.DryRun || rr.PlannedTotal != 2 || rr.SavedTotal != 0 || len(rr.Tasks) != 1 || len(rr.Tasks[0].Planned) != 2 {
+		t.Fatalf("unexpected dry-run report: %+v", rr)
+	}
+}
+
+func TestRun_InterruptedRunExitsWith130AndReportsNotRunTasks(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeConfig(t, dir, `
+downloads:
+  a_task:
+    url: https://example.com/a.pdf
+  b_task:
+    url: https://example.com/b.pdf
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	reportPath := filepath.Join(dir, "report.json")
+	var out, errOut strings.Builder
+	if code := run(ctx, []string{"-config", cfg, "-report-file", reportPath}, &out, &errOut); code != exitInterrupted {
+		t.Fatalf("expected exit code %d, got %d", exitInterrupted, code)
+	}
+	if !strings.Contains(errOut.String(), "tasks not run: a_task, b_task") || !strings.Contains(errOut.String(), "interrupted") {
+		t.Fatalf("expected not-run tasks and interruption in stderr, got %q", errOut.String())
+	}
+	b, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rr runReport
+	if err := json.Unmarshal(b, &rr); err != nil {
+		t.Fatal(err)
+	}
+	if !rr.Interrupted || len(rr.NotRun) != 2 {
+		t.Fatalf("expected interrupted report with two not-run tasks, got %+v", rr)
+	}
+}
+
+func TestRun_StopAllTasksReportsNotRunTasks(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeConfig(t, dir, `
+config:
+  task_concurrency: 1
+downloads:
+  a_first:
+    url: https://example.com/file.pdf
+    security:
+      allowed_domains: ["blocked.test"]
+    stop_all_tasks:
+      on_runtime_error: true
+  b_second:
+    url: https://example.com/other.pdf
+`)
+	var out, errOut strings.Builder
+	if code := run(context.Background(), []string{"-config", cfg, "-output", "json"}, &out, &errOut); code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	var rr runReport
+	if err := json.Unmarshal([]byte(out.String()), &rr); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !rr.StopTriggered || len(rr.NotRun) != 1 || rr.NotRun[0] != "b_second" {
+		t.Fatalf("expected b_second to be reported as not run, got %+v", rr)
+	}
+}
+
+func TestRun_RedactsConfiguredSecretValues(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeConfig(t, dir, `
+downloads:
+  bad:
+    url: https://example.com/files/my-secret-token-value/file.pdf
+    auth:
+      type: bearer
+      token: my-secret-token-value
+    security:
+      allowed_domains: ["blocked.test"]
+`)
+	var out, errOut strings.Builder
+	_ = run(context.Background(), []string{"-config", cfg}, &out, &errOut)
+	if !strings.Contains(errOut.String(), "[error] bad") {
+		t.Fatalf("expected an error for the task, got %q", errOut.String())
+	}
+	if strings.Contains(out.String()+errOut.String(), "my-secret-token-value") {
+		t.Fatalf("expected configured token to be redacted, stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
+func TestRun_DebugLogLevelWritesDebugLogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfg := writeConfig(t, dir, `
+config:
+  log_level: debug
+downloads:
+  one:
+    url: `+server.URL+`/file.txt
+    security:
+      allow_insecure_http: true
+    save:
+      base_download_dir: `+filepath.Join(dir, "downloads")+`
+`)
+	var out, errOut strings.Builder
+	if code := run(context.Background(), []string{"-config", cfg}, &out, &errOut); code != 0 {
+		t.Fatalf("expected exit code 0, got %d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "level=DEBUG") || !strings.Contains(errOut.String(), "GET "+server.URL+"/file.txt") {
+		t.Fatalf("expected debug logs in stderr, got %q", errOut.String())
 	}
 }
